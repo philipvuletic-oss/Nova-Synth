@@ -61,3 +61,10 @@ The VST3 bundle is written under `target/bundled`. On Windows, CI uploads it as 
 The resizable window uses the Nova dark-glass theme. The header contains the NOVA logo, preset navigation placeholders, CPU/voice readouts, Master Volume, and stereo output meter. The OSC page now shows an Osc A wavetable card with grouped factory tables, background WAV import/export, frame-size and auto-pitch import options, position/interpolation/level/pan controls, and a 2D frame display. Other pages identify the milestone in which their controls will arrive. The bottom area contains draggable ENV 1 breakpoints and envelope knobs, a macro placeholder, pitch/mod wheels, and a four-octave playable keyboard.
 
 Known limitations: Smooth mode uses a precomputed spectral morph grid rather than a continuously recomputed spectral interpolation; factory selection and WAV decoding are covered by offline tests but have not yet been verified in Ableton on Windows. The remainder of the oscillator section, preset controls, MIDI learn, modulation assignment, other pages, and font embedding are placeholders or planned work. VST3 is the only exported plug-in format.
+
+## Development feedback loop
+
+- `cargo run --release -p snapshot` renders the real GUI headlessly (CPU, no window/GPU) to `docs/screenshots/*.png`.
+- `cargo run --release -p demo_render` renders demo patches through the plugin to `target/demos/` (24-bit 48 kHz WAV, spectrogram PNG, JSON metrics, `summary.md`).
+- CI job `snapshots` uploads the artifacts `nova-screenshots` and `nova-audio-demos` and prints the metrics table in the run summary.
+- See `docs/AUDIT.md` for the current status against the roadmap.
