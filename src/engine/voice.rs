@@ -230,6 +230,11 @@ impl VoiceManager {
         self.age = 0;
     }
 
+    pub fn set_polyphony(&mut self, polyphony: usize) {
+        let limit = polyphony.clamp(1, MAX_VOICES);
+        self.voices[limit..].fill(Voice::default());
+    }
+
     pub fn note_on(
         &mut self,
         channel: u8,
@@ -340,17 +345,18 @@ impl VoiceManager {
             let amplitude = voice.envelope.next(self.sample_rate, settings.envelope);
             let velocity_gain = 1.0 - sensitivity + sensitivity * voice.velocity;
             let pressure_gain = 0.5 + voice.pressure * 0.5;
-            output += (voice.phase * std::f64::consts::TAU).sin() as f32
+            let contribution = (voice.phase * std::f64::consts::TAU).sin() as f32
                 * amplitude
                 * velocity_gain
                 * pressure_gain;
             voice.phase += frequency as f64 / self.sample_rate as f64;
             voice.phase -= voice.phase.floor();
-            if !output.is_finite() || !voice.phase.is_finite() {
+            if !contribution.is_finite() || !voice.phase.is_finite() {
                 *voice = Voice::default();
-                output = 0.0;
             } else if voice.envelope.stage == Stage::Off {
                 voice.active = false;
+            } else {
+                output += contribution;
             }
         }
         output
@@ -438,6 +444,21 @@ mod tests {
         manager.note_off(0, 60, false, 0.0);
         assert!(manager.note_is_active(0, 62));
         assert_eq!(manager.voices[0].envelope.stage, Stage::Attack);
+    }
+
+    #[test]
+    fn lowering_polyphony_clears_voices_outside_the_new_limit() {
+        let mut manager = manager();
+        manager.note_on(0, 60, 1.0, 1.0, 0.0, 4);
+        manager.note_on(0, 61, 1.0, 1.0, 0.0, 4);
+        manager.note_on(0, 62, 1.0, 1.0, 0.0, 4);
+        manager.note_on(0, 63, 1.0, 1.0, 0.0, 4);
+
+        manager.set_polyphony(2);
+
+        assert_eq!(manager.active_voice_count(), 2);
+        assert!(!manager.note_is_active(0, 62));
+        assert!(!manager.note_is_active(0, 63));
     }
 
     #[test]

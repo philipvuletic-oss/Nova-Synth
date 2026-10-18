@@ -17,7 +17,7 @@ fn default_render_is_finite_and_below_full_scale() {
 }
 
 #[test]
-fn release_reaches_silence_within_one_hundred_milliseconds_after_release_finishes() {
+fn release_reaches_silence_after_release_time() {
     let release_end = (0.3 * 48_000.0) as usize;
     let note_off_at = 48_000;
     let samples = common::render(

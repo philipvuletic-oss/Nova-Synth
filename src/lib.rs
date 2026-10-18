@@ -105,6 +105,7 @@ impl Plugin for Nova {
         let started = std::time::Instant::now();
         let mut next_event = context.next_event();
         let max_voices = self.params.global.polyphony.value().clamp(1, 32) as usize;
+        self.voices.set_polyphony(max_voices);
         let mut peak_left = 0.0f32;
         let mut peak_right = 0.0f32;
         let mut rendered_samples = 0usize;

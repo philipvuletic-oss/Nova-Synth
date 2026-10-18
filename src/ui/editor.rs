@@ -14,6 +14,7 @@ struct AppState {
     pressed_keys: [bool; 48],
     pitch_wheel: f32,
     mod_wheel: f32,
+    last_gui_scale: f32,
 }
 
 impl Default for AppState {
@@ -23,6 +24,7 @@ impl Default for AppState {
             pressed_keys: [false; 48],
             pitch_wheel: 0.0,
             mod_wheel: 0.0,
+            last_gui_scale: 1.0,
         }
     }
 }
@@ -38,18 +40,26 @@ pub fn editor(params: Arc<NovaParams>, shared: Arc<UiShared>) -> Option<Box<dyn 
             theme::apply(ctx);
             let scale = params.global.gui_scale.value().clamp(0.75, 2.0);
             ctx.set_zoom_factor(scale);
-            if let Ok(mut persisted) = params.persisted.lock() {
-                persisted.gui_scale = scale;
-                crate::state::migrations::migrate(&mut persisted);
+            if (state.last_gui_scale - scale).abs() > f32::EPSILON {
+                if let Ok(mut persisted) = params.persisted.lock() {
+                    persisted.gui_scale = scale;
+                    crate::state::migrations::migrate(&mut persisted);
+                }
+                state.last_gui_scale = scale;
             }
-            if let Some(key) = ctx.input(|input| {
-                input.events.iter().find_map(|event| match event {
-                    egui::Event::Key {
-                        key, pressed: true, ..
-                    } => Some(*key),
-                    _ => None,
+            if let Some(key) = (!ctx.wants_keyboard_input())
+                .then(|| {
+                    ctx.input(|input| {
+                        input.events.iter().find_map(|event| match event {
+                            egui::Event::Key {
+                                key, pressed: true, ..
+                            } => Some(*key),
+                            _ => None,
+                        })
+                    })
                 })
-            }) {
+                .flatten()
+            {
                 let key_index = match key {
                     egui::Key::Num1 => Some(0),
                     egui::Key::Num2 => Some(1),

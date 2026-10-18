@@ -69,24 +69,24 @@ impl Env1Params {
 impl Default for Env1Params {
     fn default() -> Self {
         Self {
-            delay: seconds("Delay", "env1_delay", 0.0, 0.0, 5.0),
-            attack: seconds("Attack", "env1_attack", 0.005, 0.001, 10.0),
-            hold: seconds("Hold", "env1_hold", 0.0, 0.0, 5.0),
-            decay: seconds("Decay", "env1_decay", 0.25, 0.001, 10.0),
+            delay: seconds("Delay", 0.0, 0.0, 5.0),
+            attack: seconds("Attack", 0.005, 0.001, 10.0),
+            hold: seconds("Hold", 0.0, 0.0, 5.0),
+            decay: seconds("Decay", 0.25, 0.001, 10.0),
             sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
-            release: seconds("Release", "env1_release", 0.3, 0.001, 10.0),
-            attack_curve: curve("Attack Curve", "env1_attack_curve"),
-            decay_curve: curve("Decay Curve", "env1_decay_curve"),
-            release_curve: curve("Release Curve", "env1_release_curve"),
+            release: seconds("Release", 0.3, 0.001, 10.0),
+            attack_curve: curve("Attack Curve"),
+            decay_curve: curve("Decay Curve"),
+            release_curve: curve("Release Curve"),
         }
     }
 }
 
-fn seconds(name: &'static str, _id: &'static str, default: f32, min: f32, max: f32) -> FloatParam {
+fn seconds(name: &'static str, default: f32, min: f32, max: f32) -> FloatParam {
     let range = if min == 0.0 {
         FloatRange::Linear { min, max }
     } else {
@@ -110,7 +110,7 @@ fn seconds(name: &'static str, _id: &'static str, default: f32, min: f32, max: f
         }))
 }
 
-fn curve(name: &'static str, _id: &'static str) -> FloatParam {
+fn curve(name: &'static str) -> FloatParam {
     FloatParam::new(
         name,
         0.0,

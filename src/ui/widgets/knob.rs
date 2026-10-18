@@ -3,6 +3,17 @@ use nih_plug::prelude::{FloatParam, Param, ParamSetter};
 use nih_plug_egui::egui::{self, Pos2, Response, Sense, Stroke, Ui, Vec2};
 
 pub fn knob(ui: &mut Ui, param: &FloatParam, setter: &ParamSetter<'_>, label: &str) -> Response {
+    knob_with_modulation(ui, param, setter, label, None, 0)
+}
+
+pub fn knob_with_modulation(
+    ui: &mut Ui,
+    param: &FloatParam,
+    setter: &ParamSetter<'_>,
+    label: &str,
+    modulation: Option<(f32, f32)>,
+    modulation_count: usize,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(66.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let center = Pos2::new(rect.center().x, rect.top() + 28.0);
@@ -49,24 +60,26 @@ pub fn knob(ui: &mut Ui, param: &FloatParam, setter: &ParamSetter<'_>, label: &s
         Stroke::new(3.0_f32, theme::CYAN),
     );
 
-    // A visible example modulation ring establishes the design before M7's live matrix arrives.
-    let test_mod_depth = 0.12;
-    draw_arc(
-        &painter,
-        center,
-        radius + 4.0,
-        start + sweep * value,
-        sweep * test_mod_depth,
-        8,
-        Stroke::new(2.0_f32, theme::MAGENTA),
-    );
-    let live_position = (value + test_mod_depth * 0.5).clamp(0.0, 1.0);
-    let marker_angle = start + sweep * live_position;
-    let marker = Pos2::new(
-        center.x + marker_angle.cos() * (radius + 4.0),
-        center.y + marker_angle.sin() * (radius + 4.0),
-    );
-    painter.circle_filled(marker, 2.5, theme::MAGENTA);
+    if let Some((depth, live_position)) = modulation {
+        let end = (value + depth).clamp(0.0, 1.0);
+        let arc_start = value.min(end);
+        let arc_sweep = sweep * (end - value).abs();
+        draw_arc(
+            &painter,
+            center,
+            radius + 4.0,
+            start + sweep * arc_start,
+            arc_sweep,
+            (steps as f32 * (end - value).abs()).ceil() as usize,
+            Stroke::new(2.0_f32, theme::MAGENTA),
+        );
+        let marker_angle = start + sweep * live_position.clamp(0.0, 1.0);
+        let marker = Pos2::new(
+            center.x + marker_angle.cos() * (radius + 4.0),
+            center.y + marker_angle.sin() * (radius + 4.0),
+        );
+        painter.circle_filled(marker, 2.5, theme::MAGENTA);
+    }
     painter.circle_filled(center, 2.5, theme::VALUE_TEXT);
 
     let text = param.to_string();
@@ -124,7 +137,12 @@ pub fn knob(ui: &mut Ui, param: &FloatParam, setter: &ParamSetter<'_>, label: &s
         }
     }
 
-    let response = response.on_hover_text(format!("{label}: {text} · 1 modulation"));
+    let modulation_label = match modulation_count {
+        0 => String::from("no modulations"),
+        1 => String::from("1 modulation"),
+        count => format!("{count} modulations"),
+    };
+    let response = response.on_hover_text(format!("{label}: {text} · {modulation_label}"));
     let type_value_id = response.id.with("type-value");
     response.context_menu(|ui| {
         if ui.button("Reset").clicked() {
