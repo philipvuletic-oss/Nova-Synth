@@ -19,6 +19,13 @@ pub struct GlobalParams {
 
 impl Default for GlobalParams {
     fn default() -> Self {
+        Self::with_gui_scale(1.0)
+    }
+}
+
+impl GlobalParams {
+    /// `default_gui_scale` comes from the global settings file for new plugin instances.
+    pub fn with_gui_scale(default_gui_scale: f32) -> Self {
         Self {
             velocity_sensitivity: FloatParam::new(
                 "Velocity Sensitivity",
@@ -54,7 +61,7 @@ impl Default for GlobalParams {
             safety_clipper: BoolParam::new("Safety Clipper", true),
             gui_scale: FloatParam::new(
                 "GUI Scale",
-                1.0,
+                default_gui_scale.clamp(0.75, 2.0),
                 FloatRange::Linear {
                     min: 0.75,
                     max: 2.0,

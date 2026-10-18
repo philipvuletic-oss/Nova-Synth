@@ -34,8 +34,14 @@ pub struct NovaParams {
 
 impl NovaParams {
     pub fn new() -> Self {
+        Self::from_settings(&crate::settings::Settings::default())
+    }
+
+    /// New-instance parameters: window size and default GUI scale come from the global
+    /// settings; a loaded project state overrides both.
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
         Self {
-            editor_state: EguiState::from_size(1240, 780),
+            editor_state: EguiState::from_size(settings.window_width, settings.window_height),
             master_volume: FloatParam::new(
                 "Master Volume",
                 util::db_to_gain(-6.0),
@@ -67,7 +73,7 @@ impl NovaParams {
                 }
             })),
             env1: Env1Params::default(),
-            global: GlobalParams::default(),
+            global: GlobalParams::with_gui_scale(settings.gui_scale),
             osc_a: OscillatorParams::default(),
             persisted: Arc::new(std::sync::Mutex::new(VersionedState::default())),
         }

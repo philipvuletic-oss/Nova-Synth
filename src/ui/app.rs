@@ -1,6 +1,6 @@
 use crate::engine::{AudioTelemetry, KeyboardCommand};
 use crate::params::NovaParams;
-use crate::ui::{pages, theme, widgets, UiShared};
+use crate::ui::{motion, pages, scale, theme, widgets, UiShared};
 use nih_plug::prelude::{Param, ParamSetter};
 use nih_plug_egui::{
     egui::{self, Pos2, Rect, Sense, Stroke, Vec2},
@@ -15,6 +15,12 @@ pub struct AppState {
     pub pitch_wheel: f32,
     pub mod_wheel: f32,
     pub last_gui_scale: f32,
+    /// Live global settings; `None` (tests, snapshots) disables all file I/O.
+    pub settings: Option<crate::settings::Settings>,
+    pub settings_dirty_since: Option<f64>,
+    /// Smoothed meter levels (time-based release).
+    pub meter_display: [f32; 2],
+    pub meter_initialised: bool,
 }
 
 impl Default for AppState {
@@ -26,6 +32,10 @@ impl Default for AppState {
             pitch_wheel: 0.0,
             mod_wheel: 0.0,
             last_gui_scale: 1.0,
+            settings: None,
+            settings_dirty_since: None,
+            meter_display: [0.0; 2],
+            meter_initialised: false,
         }
     }
 }
@@ -63,15 +73,118 @@ pub struct UiViewModel<'a> {
     pub meters: Meters,
 }
 
+/// Page for a pressed key (1-7). Only honoured while a Nova control has keyboard focus, so
+/// Ableton's Computer MIDI Keyboard and other host shortcuts are never hijacked.
+pub fn page_for_key(key: egui::Key) -> Option<usize> {
+    match key {
+        egui::Key::Num1 => Some(0),
+        egui::Key::Num2 => Some(1),
+        egui::Key::Num3 => Some(2),
+        egui::Key::Num4 => Some(3),
+        egui::Key::Num5 => Some(4),
+        egui::Key::Num6 => Some(5),
+        egui::Key::Num7 => Some(6),
+        _ => None,
+    }
+}
+
+/// Keyboard policy: nothing is handled unless a Nova widget has focus; page shortcuts are
+/// disabled while a text field is being edited; Escape or a click on empty space releases
+/// focus so keys flow back to the host again.
+fn handle_keyboard_focus(ctx: &egui::Context, state: &mut AppState) {
+    let focused = ctx.memory(|memory| memory.focused());
+    let Some(focused) = focused else { return };
+    let (escape, pressed_key, clicked_empty) = ctx.input(|input| {
+        let escape = input.key_pressed(egui::Key::Escape);
+        let key = input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } if !modifiers.any() => Some(*key),
+            _ => None,
+        });
+        (escape, key, input.pointer.any_pressed())
+    });
+    if escape || (clicked_empty && !ctx.wants_pointer_input()) {
+        ctx.memory_mut(|memory| memory.surrender_focus(focused));
+        return;
+    }
+    if !ctx.wants_keyboard_input() {
+        if let Some(page) = pressed_key.and_then(page_for_key) {
+            state.page = page;
+        }
+    }
+}
+
+/// Smooths the displayed meter levels with a time-based release and keeps repainting only
+/// while they are still moving.
+fn update_meters(ctx: &egui::Context, state: &mut AppState, meters: &mut Meters) {
+    let dt = ctx.input(|input| input.unstable_dt);
+    let targets = [meters.peak_left, meters.peak_right];
+    for (shown, target) in state.meter_display.iter_mut().zip(targets) {
+        *shown = if state.meter_initialised {
+            motion::meter_fall(*shown, target, dt, 0.25)
+        } else {
+            target
+        };
+    }
+    state.meter_initialised = true;
+    if state
+        .meter_display
+        .iter()
+        .zip(targets)
+        .any(|(shown, target)| motion::is_settling(*shown, target))
+    {
+        ctx.request_repaint();
+    }
+    meters.peak_left = state.meter_display[0];
+    meters.peak_right = state.meter_display[1];
+}
+
+/// Persists GUI scale and the last-used window size into the global settings file shortly
+/// after they stop changing (no disk access while the mouse is still dragging).
+fn sync_settings(ctx: &egui::Context, state: &mut AppState, params: &NovaParams, gui_scale: f32) {
+    let Some(settings) = state.settings.as_mut() else {
+        return;
+    };
+    let (width, height) = params.editor_state.size();
+    let mut changed = false;
+    if settings.window_width != width || settings.window_height != height {
+        settings.window_width = width;
+        settings.window_height = height;
+        changed = true;
+    }
+    if (settings.gui_scale - gui_scale).abs() > f32::EPSILON {
+        settings.gui_scale = gui_scale;
+        changed = true;
+    }
+    let now = ctx.input(|input| input.time);
+    if changed {
+        settings.sanitize();
+        state.settings_dirty_since = Some(now);
+    }
+    if let Some(since) = state.settings_dirty_since {
+        let dragging = ctx.input(|input| input.pointer.any_down());
+        if now - since >= 0.5 && !dragging {
+            crate::settings::save(settings);
+            state.settings_dirty_since = None;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+}
+
 /// Draws the whole Nova GUI. All GUI logic lives behind this function.
 pub fn draw_app(ctx: &egui::Context, view: &mut UiViewModel<'_>) {
     let params = view.params;
     let setter = view.setter;
     let shared = view.shared;
-    let meters = view.meters;
+    let mut meters = view.meters;
     let state = &mut *view.state;
     theme::apply(ctx);
-    let scale = params.global.gui_scale.value().clamp(0.75, 2.0);
+    let scale = scale::clamp_gui_scale(params.global.gui_scale.value());
     ctx.set_zoom_factor(scale);
     if (state.last_gui_scale - scale).abs() > f32::EPSILON {
         if let Ok(mut persisted) = params.persisted.lock() {
@@ -80,35 +193,11 @@ pub fn draw_app(ctx: &egui::Context, view: &mut UiViewModel<'_>) {
         }
         state.last_gui_scale = scale;
     }
-    if let Some(key) = (!ctx.wants_keyboard_input())
-        .then(|| {
-            ctx.input(|input| {
-                input.events.iter().find_map(|event| match event {
-                    egui::Event::Key {
-                        key, pressed: true, ..
-                    } => Some(*key),
-                    _ => None,
-                })
-            })
-        })
-        .flatten()
-    {
-        let key_index = match key {
-            egui::Key::Num1 => Some(0),
-            egui::Key::Num2 => Some(1),
-            egui::Key::Num3 => Some(2),
-            egui::Key::Num4 => Some(3),
-            egui::Key::Num5 => Some(4),
-            egui::Key::Num6 => Some(5),
-            egui::Key::Num7 => Some(6),
-            _ => None,
-        };
-        if let Some(index) = key_index {
-            state.page = index;
-        }
-    }
+    update_meters(ctx, state, &mut meters);
+    handle_keyboard_focus(ctx, state);
+    sync_settings(ctx, state, params, scale);
     ResizableWindow::new("nova-main")
-        .min_size(Vec2::new(840.0, 600.0))
+        .min_size(Vec2::new(scale::MIN_WINDOW_WIDTH, scale::MIN_WINDOW_HEIGHT))
         .show(ctx, params.editor_state.as_ref(), |ui| {
             theme::paint_background(ui);
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
@@ -236,19 +325,22 @@ fn envelope_graph(
 ) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
     let painter = ui.painter_at(rect);
+    let ppp = ui.ctx().pixels_per_point();
+    let hairline = Stroke::new(scale::hairline(ppp), theme::GRID);
     for i in 1..4 {
-        let x = rect.left() + rect.width() * i as f32 / 4.0;
+        let x = scale::snap_line(rect.left() + rect.width() * i as f32 / 4.0, ppp);
         painter.line_segment(
             [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-            Stroke::new(1.0_f32, theme::GRID),
+            hairline,
         );
     }
+    let base_y = scale::snap_line(rect.bottom() - 2.0, ppp);
     painter.line_segment(
         [
-            Pos2::new(rect.left(), rect.bottom() - 2.0),
-            Pos2::new(rect.right(), rect.bottom() - 2.0),
+            Pos2::new(rect.left(), base_y),
+            Pos2::new(rect.right(), base_y),
         ],
-        Stroke::new(1.0_f32, theme::GRID),
+        hairline,
     );
 
     let points = [
@@ -447,5 +539,21 @@ fn queue_keyboard(shared: &UiShared, command: KeyboardCommand) -> bool {
         producer.push(command).is_ok()
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_shortcuts_map_digits_one_to_seven_only() {
+        assert_eq!(page_for_key(egui::Key::Num1), Some(0));
+        assert_eq!(page_for_key(egui::Key::Num7), Some(6));
+        assert_eq!(page_for_key(egui::Key::Num8), None);
+        // Letters used by Ableton's Computer MIDI Keyboard must never be shortcuts.
+        for key in [egui::Key::A, egui::Key::W, egui::Key::Z, egui::Key::K] {
+            assert_eq!(page_for_key(key), None);
+        }
     }
 }

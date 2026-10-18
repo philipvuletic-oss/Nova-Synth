@@ -4,6 +4,7 @@ pub mod content;
 pub mod dsp;
 pub mod engine;
 pub mod params;
+pub mod settings;
 pub mod state;
 pub mod ui;
 
@@ -32,7 +33,7 @@ pub struct Nova {
 
 impl Default for Nova {
     fn default() -> Self {
-        Self::with_params(NovaParams::new())
+        Self::with_params(NovaParams::from_settings(&settings::load()))
     }
 }
 

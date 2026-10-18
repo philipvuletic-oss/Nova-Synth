@@ -65,6 +65,7 @@ benches/                  criterion benchmarks
 - Everything scales with the GUI scale factor; window is resizable and remembers its size.
 - After any GUI change, regenerate docs/screenshots (`cargo run --release -p snapshot`), commit them, open and inspect the PNGs yourself, compare against DESIGN.md, fix problems (overlaps, clipped text, misalignment, low contrast, empty areas, inconsistent spacing) and iterate at least 3 times before finishing. Embed the main screenshots in the PR description using relative links to docs/screenshots.
 - All drawing goes through `ui::app::draw_app(ctx, &mut UiViewModel)`; the plugin editor and the headless snapshot tool both call it. No GUI logic may live outside it. New live data the GUI needs goes into `UiViewModel`/`Meters` so snapshots can fake it.
+- Visual regression guard: docs/screenshots/golden holds the golden PNGs; CI re-renders and fails on differences. Never degrade the established visual style (spacing, glow, contrast, alignment). Change goldens only for an intentional redesign: run `scripts/update-goldens.sh`, commit with `[update-goldens]` in the commit message or PR title, and show the before/after images (artifact nova-golden-before-after) in the PR.
 - Keep each panel in its own clearly named function/file, draw carefully, and describe in the PR what each changed area should look like so the owner can compare with a screenshot.
 
 ## Legal / originality

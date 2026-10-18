@@ -31,6 +31,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Install Linux libraries needed by nih-plug and egui
         run: |
           sudo apt-get update
@@ -43,6 +45,36 @@ jobs:
         with:
           name: nova-screenshots
           path: docs/screenshots
+      - name: Visual regression guard (fresh render vs golden images)
+        run: cargo run --release -p snapshot -- --diff docs/screenshots/golden docs/screenshots target/golden-diff
+      - name: Golden changes versus the base branch (pull requests only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_MESSAGES: ${{ github.event.pull_request.title }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          mkdir -p target/base-golden
+          git archive "origin/$BASE_REF" docs/screenshots/golden 2>/dev/null | tar -x -C target/base-golden || true
+          if [ -d target/base-golden/docs/screenshots/golden ]; then BEFORE=target/base-golden/docs/screenshots/golden; else BEFORE=target/base-golden/empty; mkdir -p "$BEFORE"; fi
+          if cargo run --release -p snapshot -- --diff "$BEFORE" docs/screenshots/golden target/golden-before-after; then
+            echo "Golden screenshots unchanged versus $BASE_REF."
+          else
+            echo "## Golden screenshots changed (before | after)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Download artifact nova-golden-before-after for side-by-side images." >> "$GITHUB_STEP_SUMMARY"
+            if ! git log -1 --format=%B "${{ github.event.pull_request.head.sha }}" | grep -q '\[update-goldens\]' && ! echo "$HEAD_MESSAGES" | grep -q '\[update-goldens\]'; then
+              echo "::error::Golden screenshots changed but neither the last commit message nor the PR title contains [update-goldens]."
+              exit 1
+            fi
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nova-golden-before-after
+          path: |
+            target/golden-diff
+            target/golden-before-after
+          if-no-files-found: ignore
       - name: Render audio demos and sound checks
         run: cargo run --release -p demo_render -- target/demos
       - name: Audio demo summary

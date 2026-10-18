@@ -8,9 +8,13 @@ use std::sync::Arc;
 /// Thin plugin shell: all drawing happens in [`draw_app`].
 pub fn editor(params: Arc<NovaParams>, shared: Arc<UiShared>) -> Option<Box<dyn Editor>> {
     let egui_state = params.editor_state.clone();
+    let initial_state = AppState {
+        settings: Some(crate::settings::load()),
+        ..AppState::default()
+    };
     create_egui_editor(
         egui_state,
-        AppState::default(),
+        initial_state,
         |_, _| {},
         move |ctx, setter, state| {
             let mut view = UiViewModel {

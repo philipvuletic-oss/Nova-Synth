@@ -2,6 +2,7 @@
 //! CPU, blending in gamma space with premultiplied alpha exactly like egui's glow backend.
 //! It uses the egui version re-exported by `nih_plug_egui`, so no second egui is compiled.
 
+pub mod golden;
 pub mod nova_pages;
 
 use nih_plug_egui::egui::{
