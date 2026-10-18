@@ -1,0 +1,24 @@
+name: Build Windows
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Tests
+        run: cargo test --workspace --release
+      - name: Build VST3
+        run: cargo xtask bundle nova --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nova-windows
+          path: target/bundled
