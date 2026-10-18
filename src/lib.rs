@@ -31,7 +31,7 @@ impl Default for Nova {
     fn default() -> Self {
         let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(256);
         let telemetry = Arc::new(AudioTelemetry::default());
-        let ui_shared = Arc::new(UiShared::new(keyboard_tx));
+        let ui_shared = Arc::new(UiShared::new(keyboard_tx, telemetry.clone()));
         Self {
             params: Arc::new(NovaParams::new()),
             voices: VoiceManager::new(48_000.0),
@@ -39,7 +39,7 @@ impl Default for Nova {
             pitch_bend: [0.0; 16],
             sustain: [false; 16],
             mod_wheel: [0.0; 16],
-            channel_pressure: [0.0; 16],
+            channel_pressure: [1.0; 16],
             keyboard_rx,
             telemetry,
             ui_shared,
@@ -70,7 +70,7 @@ impl Plugin for Nova {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        Some(ui::editor(self.params.clone(), self.ui_shared.clone()))
+        ui::editor(self.params.clone(), self.ui_shared.clone())
     }
 
     fn initialize(
@@ -101,15 +101,30 @@ impl Plugin for Nova {
         let max_voices = self.params.global.polyphony.value().clamp(1, 32) as usize;
         let mut peak_left = 0.0f32;
         let mut peak_right = 0.0f32;
+        let mut rendered_samples = 0usize;
 
-        for sample_index in 0..buffer.samples() {
+        for (sample_index, mut channels) in buffer.iter_samples().enumerate() {
+            rendered_samples = sample_index + 1;
             while let Some(command) = self.keyboard_rx.pop().ok() {
                 match command {
                     KeyboardCommand::NoteOn { note, velocity } => {
-                        self.voices.note_on(0, note, velocity, 0.0, max_voices);
+                        self.voices.note_on(
+                            0,
+                            note,
+                            velocity,
+                            1.0,
+                            self.params.env1.delay.value(),
+                            max_voices,
+                        );
                     }
                     KeyboardCommand::NoteOff { note } => {
                         self.voices.note_off(0, note, self.sustain[0], 0.0);
+                    }
+                    KeyboardCommand::PitchBend { value } => {
+                        self.pitch_bend[0] = value.clamp(-1.0, 1.0);
+                    }
+                    KeyboardCommand::ModWheel { value } => {
+                        self.mod_wheel[0] = value.clamp(0.0, 1.0);
                     }
                 }
             }
@@ -124,49 +139,67 @@ impl Plugin for Nova {
                         note,
                         velocity,
                         ..
-                    } => self.voices.note_on(
+                    } => {
+                        let channel = channel.min(15);
+                        let _ = self.voices.note_on(
+                            channel,
+                            note,
+                            velocity,
+                            self.channel_pressure[channel as usize],
+                            self.params.env1.delay.value(),
+                            max_voices,
+                        );
+                    }
+                    NoteEvent::NoteOff {
                         channel,
                         note,
                         velocity,
-                        self.channel_pressure[channel as usize],
-                        max_voices,
-                    ),
-                    NoteEvent::NoteOff {
-                        channel, note, ..
-                    } => self.voices.note_off(
-                        channel,
-                        note,
-                        self.sustain[channel as usize],
-                        0.0,
-                    ),
+                        ..
+                    } => {
+                        let channel = channel.min(15);
+                        self.voices.note_off(
+                            channel,
+                            note,
+                            self.sustain[channel as usize],
+                            velocity,
+                        );
+                    }
                     NoteEvent::Choke { channel, note, .. } => {
+                        let channel = channel.min(15);
                         self.voices.choke(channel, note);
                     }
                     NoteEvent::MidiPitchBend { channel, value, .. } => {
+                        let channel = channel.min(15);
                         self.pitch_bend[channel as usize] = (value.clamp(0.0, 1.0) - 0.5) * 2.0;
                     }
                     NoteEvent::MidiChannelPressure {
                         channel, pressure, ..
-                    } => self.channel_pressure[channel as usize] = pressure.clamp(0.0, 1.0),
+                    } => {
+                        let channel = channel.min(15);
+                        self.channel_pressure[channel as usize] = pressure.clamp(0.0, 1.0);
+                    }
                     NoteEvent::PolyPressure {
                         channel,
                         note,
                         pressure,
                         ..
-                    } => self.voices.set_pressure(channel, note, pressure),
+                    } => self.voices.set_pressure(channel.min(15), note, pressure),
                     NoteEvent::MidiCC {
                         channel, cc, value, ..
-                    } => match cc {
-                        1 => self.mod_wheel[channel as usize] = value.clamp(0.0, 1.0),
-                        64 => {
-                            let is_down = value >= 0.5;
-                            if self.sustain[channel as usize] && !is_down {
-                                self.voices.release_sustained(channel);
+                    } => {
+                        let channel = channel.min(15);
+                        match cc {
+                            1 => self.mod_wheel[channel as usize] = value.clamp(0.0, 1.0),
+                            64 => {
+                                let is_down = value >= 0.5;
+                                if self.sustain[channel as usize] && !is_down {
+                                    self.voices.release_sustained(channel);
+                                }
+                                self.sustain[channel as usize] = is_down;
                             }
-                            self.sustain[channel as usize] = is_down;
+                            _ => {}
                         }
-                        _ => {}
-                    },
+                    }
                     _ => {}
                 }
                 next_event = context.next_event();
@@ -202,11 +235,10 @@ impl Plugin for Nova {
             peak_left = peak_left.max(left.abs());
             peak_right = peak_right.max(right.abs());
 
-            let mut channels = buffer.iter_samples().nth(sample_index).unwrap_or_default();
-            if let Some(channel) = channels.next() {
+            if let Some(channel) = channels.get_mut(0) {
                 *channel = left;
             }
-            if let Some(channel) = channels.next() {
+            if let Some(channel) = channels.get_mut(1) {
                 *channel = right;
             }
         }
@@ -221,7 +253,7 @@ impl Plugin for Nova {
             self.voices.active_voice_count() as u32,
             std::sync::atomic::Ordering::Relaxed,
         );
-        let duration = buffer.samples() as f32 / self.sample_rate;
+        let duration = rendered_samples as f32 / self.sample_rate;
         let cpu = if duration > 0.0 {
             (started.elapsed().as_secs_f32() / duration).clamp(0.0, 1.0)
         } else {
@@ -234,10 +266,23 @@ impl Plugin for Nova {
     }
 }
 
+impl Nova {
+    pub fn mod_wheel_value(&self, channel: u8) -> f32 {
+        self.mod_wheel[channel.min(15) as usize]
+    }
+}
+
 impl Vst3Plugin for Nova {
     const VST3_CLASS_ID: [u8; 16] = *b"NovaSynthPlugin1";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Instrument, Vst3SubCategory::Synth];
 }
 
-nih_export_vst3!(Nova);
+// nih-plug's VST3 macro expands a dependency macro that emits a trailing-semicolon warning.
+#[allow(semicolon_in_expressions_from_non_local_macros)]
+mod plugin_exports {
+    use super::Nova;
+    use nih_plug::prelude::nih_export_vst3;
+
+    nih_export_vst3!(Nova);
+}

@@ -1,4 +1,5 @@
 use nih_plug::prelude::*;
+use std::sync::Arc;
 
 #[derive(Params)]
 pub struct GlobalParams {
@@ -31,7 +32,10 @@ impl Default for GlobalParams {
             pitchbend_range: FloatParam::new(
                 "Pitch Bend Range",
                 2.0,
-                FloatRange::Linear { min: 0.0, max: 48.0 },
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 48.0,
+                },
             )
             .with_unit(" st")
             .with_value_to_string(formatters::v2s_f32_rounded(0)),
@@ -56,15 +60,15 @@ impl Default for GlobalParams {
                 },
             )
             .with_unit("%")
-            .with_value_to_string(|value| format!("{:.0}%", value * 100.0))
-            .with_string_to_value(|value| {
+            .with_value_to_string(Arc::new(|value| format!("{:.0}%", value * 100.0)))
+            .with_string_to_value(Arc::new(|value| {
                 value
                     .trim_end_matches('%')
                     .trim()
                     .parse::<f32>()
                     .ok()
                     .map(|value| value / 100.0)
-            }),
+            })),
         }
     }
 }

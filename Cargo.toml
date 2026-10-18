@@ -28,6 +28,10 @@ rand_xoshiro = "0.8.1"
 criterion = "0.8.2"
 approx = "0.5.1"
 
+[[bench]]
+name = "render"
+harness = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

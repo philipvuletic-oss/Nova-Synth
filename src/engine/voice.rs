@@ -7,6 +7,8 @@ pub const MAX_VOICES: usize = 32;
 pub enum KeyboardCommand {
     NoteOn { note: u8, velocity: f32 },
     NoteOff { note: u8 },
+    PitchBend { value: f32 },
+    ModWheel { value: f32 },
 }
 
 #[derive(Default)]
@@ -28,7 +30,8 @@ impl AudioTelemetry {
         f32::from_bits(self.peak_right.load(std::sync::atomic::Ordering::Relaxed))
     }
     pub fn active_voices(&self) -> u32 {
-        self.active_voices.load(std::sync::atomic::Ordering::Relaxed)
+        self.active_voices
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -104,8 +107,7 @@ impl Envelope {
                 self.elapsed += dt;
                 let position = (self.elapsed / attack).clamp(0.0, 1.0);
                 self.level = self.start_level
-                    + (1.0 - self.start_level)
-                        * shape(position, params.attack_curve.value());
+                    + (1.0 - self.start_level) * shape(position, params.attack_curve.value());
                 if position >= 1.0 {
                     self.level = 1.0;
                     self.elapsed = 0.0;
@@ -126,8 +128,7 @@ impl Envelope {
             Stage::Decay => {
                 self.elapsed += dt;
                 let position = (self.elapsed / decay).clamp(0.0, 1.0);
-                self.level = 1.0
-                    + (sustain - 1.0) * shape(position, params.decay_curve.value());
+                self.level = 1.0 + (sustain - 1.0) * shape(position, params.decay_curve.value());
                 if position >= 1.0 {
                     self.level = sustain;
                     self.stage = Stage::Sustain;
@@ -137,8 +138,8 @@ impl Envelope {
             Stage::Release => {
                 self.elapsed += dt;
                 let position = (self.elapsed / release).clamp(0.0, 1.0);
-                self.level = self.start_level
-                    * (1.0 - shape(position, params.release_curve.value()));
+                self.level =
+                    self.start_level * (1.0 - shape(position, params.release_curve.value()));
                 if position >= 1.0 {
                     self.level = 0.0;
                     self.stage = Stage::Off;
@@ -227,6 +228,7 @@ impl VoiceManager {
         note: u8,
         velocity: f32,
         pressure: f32,
+        delay: f32,
         polyphony: usize,
     ) -> usize {
         let limit = polyphony.clamp(1, MAX_VOICES);
@@ -235,7 +237,9 @@ impl VoiceManager {
             .iter()
             .position(|voice| voice.active && voice.channel == channel && voice.note == note);
         let free = self.voices[..limit].iter().position(|voice| !voice.active);
-        let selected = same_note.or(free).unwrap_or_else(|| self.steal_candidate(limit));
+        let selected = same_note
+            .or(free)
+            .unwrap_or_else(|| self.steal_candidate(limit));
         let voice = &mut self.voices[selected];
         voice.active = true;
         voice.note = note.min(127);
@@ -245,7 +249,7 @@ impl VoiceManager {
         voice.velocity = velocity.clamp(0.0, 1.0);
         voice.pressure = pressure.clamp(0.0, 1.0);
         voice.age = self.age;
-        voice.envelope.trigger(0.0);
+        voice.envelope.trigger(delay.max(0.0));
         selected
     }
 
@@ -333,8 +337,8 @@ impl VoiceManager {
             }
             let bend = pitch_bend[voice.channel as usize].clamp(-1.0, 1.0)
                 * pitch_bend_range.clamp(0.0, 48.0);
-            let frequency =
-                a4_tuning.clamp(415.0, 466.0) * 2.0f32.powf((voice.note as f32 - 69.0 + bend) / 12.0);
+            let frequency = a4_tuning.clamp(415.0, 466.0)
+                * 2.0f32.powf((voice.note as f32 - 69.0 + bend) / 12.0);
             let amplitude = voice.envelope.next(self.sample_rate, envelope_params);
             let velocity_gain = 1.0 - sensitivity + sensitivity * voice.velocity;
             let pressure_gain = 0.5 + voice.pressure * 0.5;
@@ -368,5 +372,90 @@ impl VoiceManager {
     #[cfg(test)]
     pub fn release_level(&self, index: usize) -> f32 {
         self.voices[index].envelope.level
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager() -> VoiceManager {
+        VoiceManager::new(1_000.0)
+    }
+
+    #[test]
+    fn release_phase_voice_is_stolen_before_held_voice() {
+        let mut manager = manager();
+        manager.note_on(0, 60, 1.0, 1.0, 0.0, 2);
+        manager.note_on(0, 61, 1.0, 1.0, 0.0, 2);
+        manager.note_off(0, 60, false, 0.5);
+        manager.note_on(0, 62, 1.0, 1.0, 0.0, 2);
+
+        assert!(!manager.note_is_active(0, 60));
+        assert!(manager.note_is_active(0, 61));
+        assert!(manager.note_is_active(0, 62));
+    }
+
+    #[test]
+    fn quietest_release_voice_is_stolen_first() {
+        let mut manager = manager();
+        manager.note_on(0, 60, 1.0, 1.0, 0.0, 2);
+        manager.note_on(0, 61, 1.0, 1.0, 0.0, 2);
+        manager.note_off(0, 60, false, 0.0);
+        manager.note_off(0, 61, false, 0.0);
+        manager.voices[0].envelope.level = 0.2;
+        manager.voices[1].envelope.level = 0.8;
+        manager.note_on(0, 62, 1.0, 1.0, 0.0, 2);
+
+        assert!(!manager.note_is_active(0, 60));
+        assert!(manager.note_is_active(0, 61));
+    }
+
+    #[test]
+    fn sustain_holds_note_until_pedal_releases() {
+        let mut manager = manager();
+        manager.note_on(2, 60, 1.0, 1.0, 0.0, 4);
+        manager.note_off(2, 60, true, 0.0);
+        assert!(manager.note_is_active(2, 60));
+        assert_ne!(manager.voices[0].envelope.stage, Stage::Release);
+
+        manager.release_sustained(2);
+        assert_eq!(manager.voices[0].envelope.stage, Stage::Release);
+    }
+
+    #[test]
+    fn same_note_retrigger_reuses_voice() {
+        let mut manager = manager();
+        let first = manager.note_on(0, 60, 0.5, 1.0, 0.0, 8);
+        let second = manager.note_on(0, 60, 1.0, 1.0, 0.0, 8);
+        assert_eq!(first, second);
+        assert_eq!(manager.active_voice_count(), 1);
+        assert!(manager.voices[first].key_down);
+    }
+
+    #[test]
+    fn note_off_for_stolen_voice_is_ignored() {
+        let mut manager = manager();
+        manager.note_on(0, 60, 1.0, 1.0, 0.0, 1);
+        manager.note_on(0, 62, 1.0, 1.0, 0.0, 1);
+        manager.note_off(0, 60, false, 0.0);
+        assert!(manager.note_is_active(0, 62));
+        assert_eq!(manager.voices[0].envelope.stage, Stage::Attack);
+    }
+
+    #[test]
+    fn random_note_stream_never_panics_or_exceeds_voice_limit() {
+        let mut manager = manager();
+        let mut state = 0x9E37_79B9_u32;
+        for _ in 0..1_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let note = 36 + ((state >> 16) % 60) as u8;
+            if state & 1 == 0 {
+                manager.note_on(0, note, (state & 0xffff) as f32 / 65_535.0, 1.0, 0.0, 32);
+            } else {
+                manager.note_off(0, note, state & 2 != 0, 0.0);
+            }
+            assert!(manager.active_voice_count() <= MAX_VOICES);
+        }
     }
 }

@@ -21,7 +21,6 @@ pub struct NovaParams {
 
     #[nested(group = "global")]
     pub global: GlobalParams,
-
 }
 
 impl NovaParams {
@@ -40,8 +39,7 @@ impl NovaParams {
             .with_smoother(SmoothingStyle::Linear(20.0))
             .with_unit(" dB")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db())
-            .with_poly_modulation_id(1),
+            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
             env1: Env1Params::default(),
             global: GlobalParams::default(),
         }

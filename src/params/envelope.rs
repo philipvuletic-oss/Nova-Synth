@@ -1,4 +1,5 @@
 use nih_plug::prelude::*;
+use std::sync::Arc;
 
 #[derive(Params)]
 pub struct Env1Params {
@@ -29,14 +30,10 @@ impl Default for Env1Params {
             attack: seconds("Attack", "env1_attack", 0.005, 0.001, 10.0),
             hold: seconds("Hold", "env1_hold", 0.0, 0.0, 5.0),
             decay: seconds("Decay", "env1_decay", 0.25, 0.001, 10.0),
-            sustain: FloatParam::new(
-                "Sustain",
-                0.7,
-                FloatRange::Linear { min: 0.0, max: 1.0 },
-            )
-            .with_unit("%")
-            .with_value_to_string(formatters::v2s_f32_percentage(0))
-            .with_string_to_value(formatters::s2v_f32_percentage()),
+            sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
             release: seconds("Release", "env1_release", 0.3, 0.001, 10.0),
             attack_curve: curve("Attack Curve", "env1_attack_curve"),
             decay_curve: curve("Decay Curve", "env1_decay_curve"),
@@ -57,13 +54,23 @@ fn seconds(name: &'static str, _id: &'static str, default: f32, min: f32, max: f
     )
     .with_unit(" s")
     .with_value_to_string(formatters::v2s_f32_rounded(3))
-    .with_string_to_value(formatters::s2v_f32())
+    .with_string_to_value(Arc::new(|value| {
+        value
+            .trim()
+            .trim_end_matches('s')
+            .trim()
+            .parse::<f32>()
+            .ok()
+    }))
 }
 
 fn curve(name: &'static str, _id: &'static str) -> FloatParam {
     FloatParam::new(
         name,
         0.0,
-        FloatRange::Linear { min: -1.0, max: 1.0 },
+        FloatRange::Linear {
+            min: -1.0,
+            max: 1.0,
+        },
     )
 }
