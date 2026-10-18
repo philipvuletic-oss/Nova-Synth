@@ -55,7 +55,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           git fetch --depth=1 origin "$BASE_REF"
-          git fetch --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+          git fetch --unshallow origin "refs/pull/${PR_NUMBER}/head"
           mkdir -p target/base-golden
           git archive "origin/$BASE_REF" docs/screenshots/golden 2>/dev/null | tar -x -C target/base-golden || true
           if [ -d target/base-golden/docs/screenshots/golden ]; then BEFORE=target/base-golden/docs/screenshots/golden; else BEFORE=target/base-golden/empty; mkdir -p "$BEFORE"; fi
@@ -64,8 +64,8 @@ jobs:
           else
             echo "## Golden screenshots changed (before | after)" >> "$GITHUB_STEP_SUMMARY"
             echo "Download artifact nova-golden-before-after for side-by-side images." >> "$GITHUB_STEP_SUMMARY"
-            if ! git log -1 --format=%B FETCH_HEAD 2>/dev/null | grep -q '\[update-goldens\]' && ! echo "$HEAD_MESSAGES" | grep -q '\[update-goldens\]'; then
-              echo "::error::Golden screenshots changed but neither the last commit message nor the PR title contains [update-goldens]."
+            if ! git log --format=%B "origin/$BASE_REF..FETCH_HEAD" 2>/dev/null | grep -q '\[update-goldens\]' && ! echo "$HEAD_MESSAGES" | grep -q '\[update-goldens\]'; then
+              echo "::error::Golden screenshots changed but no PR commit message or title contains [update-goldens]."
               exit 1
             fi
           fi
