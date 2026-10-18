@@ -1,5 +1,5 @@
 use nova::{
-    content::wavetables::FrameInterpolation,
+    content::wavetables::{FrameInterpolation, Wavetable},
     engine::{VoiceManager, VoiceRenderSettings},
     params::NovaParams,
 };
@@ -18,6 +18,41 @@ pub fn render_with_blocks(
     samples: usize,
     block_sizes: &[usize],
     note_off_at: Option<usize>,
+) -> Vec<f32> {
+    render_with_wavetable_blocks(
+        sample_rate,
+        samples,
+        block_sizes,
+        note_off_at,
+        None,
+        FrameInterpolation::Frames,
+    )
+}
+
+pub fn render_with_wavetable(
+    sample_rate: f32,
+    samples: usize,
+    block_size: usize,
+    wavetable: &Wavetable,
+    interpolation: FrameInterpolation,
+) -> Vec<f32> {
+    render_with_wavetable_blocks(
+        sample_rate,
+        samples,
+        &[block_size],
+        None,
+        Some(wavetable),
+        interpolation,
+    )
+}
+
+fn render_with_wavetable_blocks(
+    sample_rate: f32,
+    samples: usize,
+    block_sizes: &[usize],
+    note_off_at: Option<usize>,
+    wavetable: Option<&Wavetable>,
+    interpolation: FrameInterpolation,
 ) -> Vec<f32> {
     let params = NovaParams::new();
     params.reset_smoothers();
@@ -46,9 +81,9 @@ pub fn render_with_blocks(
                 pitch_bend: &bend,
                 envelope: params.env1.next_values(),
                 velocity_sensitivity: params.global.velocity_sensitivity.smoothed.next(),
-                wavetable: None,
+                wavetable,
                 wt_position: 0.0,
-                interpolation: FrameInterpolation::Frames,
+                interpolation,
                 oscillator_level: 1.0,
                 oscillator_enabled: true,
             };

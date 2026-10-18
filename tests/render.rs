@@ -1,6 +1,7 @@
 mod common;
 
 use approx::assert_abs_diff_eq;
+use nova::content::wavetables::{FrameInterpolation, Wavetable, FRAME_SIZE};
 
 #[test]
 fn a4_renders_at_440_hz() {
@@ -58,8 +59,29 @@ fn random_variable_block_sizes_match_fixed_block_render() {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         *size = 1 + (state as usize % 512);
     }
+
     let actual = common::render_with_blocks(48_000.0, 16_384, &sizes, None);
     for (expected, actual) in expected.iter().zip(actual.iter()) {
         assert_abs_diff_eq!(expected, actual, epsilon = 1.0e-6);
+    }
+}
+
+#[test]
+fn wavetable_engine_renders_all_interpolation_modes() {
+    let frame = (0..FRAME_SIZE)
+        .map(|index| (std::f32::consts::TAU * index as f32 / FRAME_SIZE as f32).sin())
+        .collect();
+    let table = Wavetable::from_frames("Render test", "test", vec![frame], 48_000.0)
+        .expect("test wavetable builds");
+
+    for interpolation in [
+        FrameInterpolation::Frames,
+        FrameInterpolation::Smooth,
+        FrameInterpolation::Step,
+    ] {
+        let samples = common::render_with_wavetable(48_000.0, 8_192, 64, &table, interpolation);
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        assert!(common::peak(&samples) > 0.01);
+        assert!(common::peak(&samples) < 1.0);
     }
 }

@@ -1,11 +1,14 @@
 use realfft::num_complex::Complex32;
 use realfft::RealFftPlanner;
 use std::io::{Read, Seek, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub const FRAME_SIZE: usize = 2048;
 pub const MAX_FRAMES: usize = 256;
 const MIDI_LEVELS: [u8; 12] = [12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 135];
 const MAX_WAV_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SMOOTH_FRAMES: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameInterpolation {
@@ -108,10 +111,15 @@ impl Wavetable {
         for level in 0..MIDI_LEVELS.len() {
             smooth_mipmaps[level].push(mipmaps[level][0].clone());
         }
+        let smooth_subdivisions = if frames.len() > 1 {
+            ((MAX_SMOOTH_FRAMES - 1) / (frames.len() - 1)).clamp(1, 4)
+        } else {
+            1
+        };
         let mut morph_spectrum = forward.make_output_vec();
         for interval in 0..spectra.len().saturating_sub(1) {
-            for step in 1..=3 {
-                let amount = step as f32 * 0.25;
+            for step in 1..smooth_subdivisions {
+                let amount = step as f32 / smooth_subdivisions as f32;
                 for (index, bin) in morph_spectrum.iter_mut().enumerate() {
                     let first = spectra[interval][index];
                     let second = spectra[interval + 1][index];
@@ -269,6 +277,52 @@ fn guarded_table(samples: &[f32], scale: f32) -> Vec<f32> {
     table.push(samples[0] * scale);
     table.push(samples[1] * scale);
     table
+}
+
+pub struct WavetableStore {
+    current: arc_swap::ArcSwap<Wavetable>,
+    generation: AtomicU64,
+    audio_generation: AtomicU64,
+    retired: Mutex<Vec<(u64, Arc<Wavetable>)>>,
+}
+
+impl WavetableStore {
+    pub fn new(initial: Wavetable) -> Self {
+        Self {
+            current: arc_swap::ArcSwap::from_pointee(initial),
+            generation: AtomicU64::new(0),
+            audio_generation: AtomicU64::new(0),
+            retired: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn load(&self) -> Arc<Wavetable> {
+        self.current.load_full()
+    }
+
+    pub fn load_for_audio(&self) -> (Arc<Wavetable>, u64) {
+        let table = self.current.load_full();
+        let generation = self.generation.load(Ordering::Acquire);
+        (table, generation)
+    }
+
+    pub fn audio_finished(&self, generation: u64) {
+        self.audio_generation.store(generation, Ordering::Release);
+    }
+
+    pub fn replace(&self, table: Wavetable) {
+        let mut retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.generation.load(Ordering::Relaxed);
+        let previous = self.current.swap(Arc::new(table));
+        self.generation
+            .store(generation.wrapping_add(1), Ordering::Release);
+        retired.push((generation, previous));
+        let audio_generation = self.audio_generation.load(Ordering::Acquire);
+        retired.retain(|(retired_generation, _)| *retired_generation < audio_generation);
+    }
 }
 
 fn clamp_frame(frame: isize, count: usize) -> usize {
@@ -703,29 +757,47 @@ fn pitch_detect_frames(samples: &[f32], sample_rate: u32) -> Vec<Vec<f32>> {
 }
 
 pub fn detect_clm_frame_size_bytes(bytes: &[u8]) -> Option<usize> {
-    for index in 0..bytes.len().saturating_sub(8) {
-        if &bytes[index..index + 4] != b"clm " {
-            continue;
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let riff_end = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    let end_of_file = riff_end.saturating_add(8).min(bytes.len());
+    let mut index = 12usize;
+    while index.checked_add(8).is_some_and(|end| end <= end_of_file) {
+        let chunk_id = &bytes[index..index + 4];
+        let chunk_size = u32::from_le_bytes(bytes[index + 4..index + 8].try_into().ok()?) as usize;
+        let data_start = index + 8;
+        let data_end = match data_start.checked_add(chunk_size) {
+            Some(end) if end <= end_of_file => end,
+            _ => return None,
+        };
+        if chunk_id == b"clm " {
+            let data = &bytes[data_start..data_end];
+            let digit_start = data
+                .iter()
+                .position(|byte| *byte != 0 && *byte != b' ')
+                .unwrap_or(data.len());
+            let digit_end = data[digit_start..]
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .map_or(data.len(), |length| digit_start + length);
+            if digit_end > digit_start {
+                if let Ok(text) = std::str::from_utf8(&data[digit_start..digit_end]) {
+                    if let Ok(value) = text.parse::<usize>() {
+                        if [256, 512, 1024, 2048, 4096].contains(&value) {
+                            return Some(value);
+                        }
+                    }
+                }
+            }
         }
-        let chunk_len = u32::from_le_bytes(bytes[index + 4..index + 8].try_into().ok()?) as usize;
-        let start = index + 8;
-        let data = bytes.get(start..start.saturating_add(chunk_len))?;
-        let digits = data
-            .iter()
-            .skip_while(|byte| **byte == 0 || **byte == b' ')
-            .take_while(|byte| byte.is_ascii_digit())
-            .copied()
-            .collect::<Vec<_>>();
-        let value = std::str::from_utf8(&digits).ok()?.parse::<usize>().ok()?;
-        if [256, 512, 1024, 2048, 4096].contains(&value) {
-            return Some(value);
-        }
+        index = data_end.saturating_add(chunk_size & 1);
     }
     None
 }
 
 fn strip_clm_chunks(bytes: &[u8]) -> Vec<u8> {
-    if bytes.len() < 12 || &bytes[..4] != b"RIFF" {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return bytes.to_vec();
     }
     let mut stripped = bytes[..12].to_vec();

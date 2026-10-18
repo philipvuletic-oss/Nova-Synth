@@ -10,11 +10,10 @@ pub mod ui;
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
-use crate::content::wavetables::{FrameInterpolation, Wavetable};
+use crate::content::wavetables::{FrameInterpolation, Wavetable, WavetableStore};
 use crate::engine::{AudioTelemetry, KeyboardCommand, VoiceManager, VoiceRenderSettings};
 use crate::params::NovaParams;
 use crate::ui::UiShared;
-use arc_swap::ArcSwap;
 
 pub struct Nova {
     params: Arc<NovaParams>,
@@ -27,14 +26,14 @@ pub struct Nova {
     keyboard_rx: rtrb::Consumer<KeyboardCommand>,
     telemetry: Arc<AudioTelemetry>,
     ui_shared: Arc<UiShared>,
-    wavetable: Arc<ArcSwap<Wavetable>>,
+    wavetable: Arc<WavetableStore>,
 }
 
 impl Default for Nova {
     fn default() -> Self {
         let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(256);
         let telemetry = Arc::new(AudioTelemetry::default());
-        let wavetable = Arc::new(ArcSwap::from_pointee(Wavetable::fallback_sine(48_000.0)));
+        let wavetable = Arc::new(WavetableStore::new(Wavetable::fallback_sine(48_000.0)));
         let ui_shared = Arc::new(UiShared::new(
             keyboard_tx,
             telemetry.clone(),
@@ -106,7 +105,6 @@ impl Plugin for Nova {
         } else {
             None
         };
-        let current_table = self.wavetable.load_full();
         let wavetable = self.wavetable.clone();
         let generation_counter = self.ui_shared.wavetable_generation.clone();
         let loading = self.ui_shared.wavetable_loading.clone();
@@ -114,10 +112,10 @@ impl Plugin for Nova {
         loading.store(true, std::sync::atomic::Ordering::Relaxed);
         std::thread::spawn(move || {
             let restored = restore_wavetable(persisted, sample_rate)
-                .or_else(|| current_table.rebuild_for_sample_rate(sample_rate).ok());
+                .or_else(|| wavetable.load().rebuild_for_sample_rate(sample_rate).ok());
             if generation_counter.load(std::sync::atomic::Ordering::Relaxed) == generation {
                 if let Some(table) = restored {
-                    wavetable.store(Arc::new(table));
+                    wavetable.replace(table);
                 }
                 loading.store(false, std::sync::atomic::Ordering::Relaxed);
             }
@@ -148,7 +146,7 @@ impl Plugin for Nova {
             self.params.osc_a.phase_rand.value(),
             self.params.osc_a.phase.value(),
         );
-        let wavetable = self.wavetable.load();
+        let (wavetable, wavetable_generation) = self.wavetable.load_for_audio();
         let mut peak_left = 0.0f32;
         let mut peak_right = 0.0f32;
         let mut rendered_samples = 0usize;
@@ -270,7 +268,7 @@ impl Plugin for Nova {
                 pitch_bend: &self.pitch_bend,
                 envelope: self.params.env1.next_values(),
                 velocity_sensitivity: self.params.global.velocity_sensitivity.smoothed.next(),
-                wavetable: Some(&wavetable),
+                wavetable: Some(wavetable.as_ref()),
                 wt_position: self.params.osc_a.wt_position.smoothed.next(),
                 interpolation: match self.params.osc_a.interp_mode.value() {
                     1 => FrameInterpolation::Smooth,
@@ -307,6 +305,8 @@ impl Plugin for Nova {
             }
         }
 
+        drop(wavetable);
+        self.wavetable.audio_finished(wavetable_generation);
         self.telemetry
             .peak_left
             .store(peak_left.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -373,6 +373,37 @@ fn restore_wavetable(
                 crate::content::factory::generate_factory_wavetable(index, sample_rate).ok()
             })
     })
+}
+
+#[cfg(test)]
+mod wavetable_restore_tests {
+    use super::restore_wavetable;
+    use crate::state::persisted::VersionedState;
+
+    #[test]
+    fn restores_embedded_table_data() {
+        let frames = vec![(0..2048)
+            .map(|sample| {
+                ((std::f32::consts::TAU * sample as f32 / 2048.0).sin() * i16::MAX as f32).round()
+                    as i16
+            })
+            .collect()];
+        let state = VersionedState {
+            selected_wavetable: String::from("Imported table"),
+            imported_wavetable_name: Some(String::from("Embedded test")),
+            imported_wavetable_source: Some(String::from("test")),
+            imported_wavetable_frames: Some(frames),
+            ..VersionedState::default()
+        };
+
+        let restored =
+            restore_wavetable(Some(state), 48_000.0).expect("embedded wavetable restores");
+
+        assert_eq!(restored.name, "Embedded test");
+        assert_eq!(restored.frames.len(), 1);
+        assert!(restored.frames[0][512] > 0.99);
+        assert!(restored.frames[0][0].abs() < 1.0e-5);
+    }
 }
 
 impl Vst3Plugin for Nova {
