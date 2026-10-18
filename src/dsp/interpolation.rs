@@ -1,1 +1,1 @@
-//! Shared interpolation utilities arrive with the wavetable milestone.
+//! Shared interpolation utilities arrive with wavetable milestone M1.

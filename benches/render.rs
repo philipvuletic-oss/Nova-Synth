@@ -1,11 +1,13 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use nova::{
-    engine::VoiceManager,
+    engine::{VoiceManager, VoiceRenderSettings},
     params::{envelope::Env1Params, NovaParams},
 };
+use std::hint::black_box;
 
 fn render_16_voices(criterion: &mut Criterion) {
     let params = NovaParams::new();
+    params.reset_smoothers();
     criterion.bench_function("16-voice sine render", |bencher| {
         bencher.iter(|| {
             let mut voices = VoiceManager::new(48_000.0);
@@ -14,20 +16,16 @@ fn render_16_voices(criterion: &mut Criterion) {
             }
             let envelope = Env1Params::default();
             let pitch_bend = [0.0; 16];
-            let mut left = 0.0;
-            let mut right = 0.0;
             for _ in 0..black_box(512) {
-                voices.render_sample(
-                    16,
-                    params.global.a4_tuning.value(),
-                    params.global.pitchbend_range.value(),
-                    &pitch_bend,
-                    &envelope,
-                    params.global.velocity_sensitivity.value(),
-                    &mut left,
-                    &mut right,
-                );
-                black_box((left, right));
+                let settings = VoiceRenderSettings {
+                    polyphony: 16,
+                    a4_tuning: params.global.a4_tuning.value(),
+                    pitch_bend_range: params.global.pitchbend_range.value(),
+                    pitch_bend: &pitch_bend,
+                    envelope: envelope.next_values(),
+                    velocity_sensitivity: params.global.velocity_sensitivity.smoothed.next(),
+                };
+                black_box(voices.render_sample(&settings));
             }
         })
     });

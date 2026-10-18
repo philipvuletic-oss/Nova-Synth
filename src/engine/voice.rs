@@ -1,7 +1,16 @@
-use crate::params::envelope::Env1Params;
+use crate::params::envelope::EnvelopeValues;
 use std::sync::atomic::AtomicU32;
 
 pub const MAX_VOICES: usize = 32;
+
+pub struct VoiceRenderSettings<'a> {
+    pub polyphony: usize,
+    pub a4_tuning: f32,
+    pub pitch_bend_range: f32,
+    pub pitch_bend: &'a [f32; 16],
+    pub envelope: EnvelopeValues,
+    pub velocity_sensitivity: f32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum KeyboardCommand {
@@ -84,14 +93,14 @@ impl Envelope {
         }
     }
 
-    fn next(&mut self, sample_rate: f32, params: &Env1Params) -> f32 {
+    fn next(&mut self, sample_rate: f32, params: EnvelopeValues) -> f32 {
         let dt = sample_rate.recip();
-        let delay = params.delay.value().max(0.0);
-        let attack = params.attack.value().max(dt);
-        let hold = params.hold.value().max(0.0);
-        let decay = params.decay.value().max(dt);
-        let sustain = params.sustain.value().clamp(0.0, 1.0);
-        let release = params.release.value().max(dt);
+        let delay = params.delay.max(0.0);
+        let attack = params.attack.max(dt);
+        let hold = params.hold.max(0.0);
+        let decay = params.decay.max(dt);
+        let sustain = params.sustain.clamp(0.0, 1.0);
+        let release = params.release.max(dt);
 
         match self.stage {
             Stage::Off => self.level = 0.0,
@@ -107,7 +116,7 @@ impl Envelope {
                 self.elapsed += dt;
                 let position = (self.elapsed / attack).clamp(0.0, 1.0);
                 self.level = self.start_level
-                    + (1.0 - self.start_level) * shape(position, params.attack_curve.value());
+                    + (1.0 - self.start_level) * shape(position, params.attack_curve);
                 if position >= 1.0 {
                     self.level = 1.0;
                     self.elapsed = 0.0;
@@ -128,7 +137,7 @@ impl Envelope {
             Stage::Decay => {
                 self.elapsed += dt;
                 let position = (self.elapsed / decay).clamp(0.0, 1.0);
-                self.level = 1.0 + (sustain - 1.0) * shape(position, params.decay_curve.value());
+                self.level = 1.0 + (sustain - 1.0) * shape(position, params.decay_curve);
                 if position >= 1.0 {
                     self.level = sustain;
                     self.stage = Stage::Sustain;
@@ -138,8 +147,7 @@ impl Envelope {
             Stage::Release => {
                 self.elapsed += dt;
                 let position = (self.elapsed / release).clamp(0.0, 1.0);
-                self.level =
-                    self.start_level * (1.0 - shape(position, params.release_curve.value()));
+                self.level = self.start_level * (1.0 - shape(position, params.release_curve));
                 if position >= 1.0 {
                     self.level = 0.0;
                     self.stage = Stage::Off;
@@ -317,29 +325,19 @@ impl VoiceManager {
         }
     }
 
-    pub fn render_sample(
-        &mut self,
-        polyphony: usize,
-        a4_tuning: f32,
-        pitch_bend_range: f32,
-        pitch_bend: &[f32; 16],
-        envelope_params: &Env1Params,
-        velocity_sensitivity: f32,
-        left: &mut f32,
-        right: &mut f32,
-    ) {
-        let limit = polyphony.clamp(1, MAX_VOICES);
-        let sensitivity = velocity_sensitivity.clamp(0.0, 1.0);
+    pub fn render_sample(&mut self, settings: &VoiceRenderSettings<'_>) -> f32 {
+        let limit = settings.polyphony.clamp(1, MAX_VOICES);
+        let sensitivity = settings.velocity_sensitivity.clamp(0.0, 1.0);
         let mut output = 0.0f32;
         for voice in &mut self.voices[..limit] {
             if !voice.active {
                 continue;
             }
-            let bend = pitch_bend[voice.channel as usize].clamp(-1.0, 1.0)
-                * pitch_bend_range.clamp(0.0, 48.0);
-            let frequency = a4_tuning.clamp(415.0, 466.0)
+            let bend = settings.pitch_bend[voice.channel as usize].clamp(-1.0, 1.0)
+                * settings.pitch_bend_range.clamp(0.0, 48.0);
+            let frequency = settings.a4_tuning.clamp(415.0, 466.0)
                 * 2.0f32.powf((voice.note as f32 - 69.0 + bend) / 12.0);
-            let amplitude = voice.envelope.next(self.sample_rate, envelope_params);
+            let amplitude = voice.envelope.next(self.sample_rate, settings.envelope);
             let velocity_gain = 1.0 - sensitivity + sensitivity * voice.velocity;
             let pressure_gain = 0.5 + voice.pressure * 0.5;
             output += (voice.phase * std::f64::consts::TAU).sin() as f32
@@ -355,8 +353,7 @@ impl VoiceManager {
                 voice.active = false;
             }
         }
-        *left = output;
-        *right = output;
+        output
     }
 
     pub fn active_voice_count(&self) -> usize {

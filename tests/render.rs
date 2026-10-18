@@ -37,3 +37,29 @@ fn output_is_invariant_to_block_size() {
         assert_abs_diff_eq!(left, right, epsilon = 1.0e-6);
     }
 }
+
+#[test]
+fn render_is_stable_at_common_sample_rates_and_block_sizes() {
+    for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+        for block_size in [1, 64, 512] {
+            let samples = common::render(sample_rate, 4_096, block_size, None);
+            assert!(samples.iter().all(|sample| sample.is_finite()));
+            assert!(common::peak(&samples) < 1.0);
+        }
+    }
+}
+
+#[test]
+fn random_variable_block_sizes_match_fixed_block_render() {
+    let expected = common::render(48_000.0, 16_384, 512, None);
+    let mut state = 0xA341_316C_u32;
+    let mut sizes = [0usize; 128];
+    for size in &mut sizes {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *size = 1 + (state as usize % 512);
+    }
+    let actual = common::render_with_blocks(48_000.0, 16_384, &sizes, None);
+    for (expected, actual) in expected.iter().zip(actual.iter()) {
+        assert_abs_diff_eq!(expected, actual, epsilon = 1.0e-6);
+    }
+}

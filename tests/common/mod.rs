@@ -1,4 +1,7 @@
-use nova::{engine::VoiceManager, params::NovaParams};
+use nova::{
+    engine::{VoiceManager, VoiceRenderSettings},
+    params::NovaParams,
+};
 
 pub fn render(
     sample_rate: f32,
@@ -6,31 +9,45 @@ pub fn render(
     block_size: usize,
     note_off_at: Option<usize>,
 ) -> Vec<f32> {
+    render_with_blocks(sample_rate, samples, &[block_size], note_off_at)
+}
+
+pub fn render_with_blocks(
+    sample_rate: f32,
+    samples: usize,
+    block_sizes: &[usize],
+    note_off_at: Option<usize>,
+) -> Vec<f32> {
     let params = NovaParams::new();
+    params.reset_smoothers();
     let mut voice = VoiceManager::new(sample_rate);
     voice.note_on(0, 69, 1.0, 1.0, params.env1.delay.value(), 1);
     let mut output = Vec::with_capacity(samples);
     let bend = [0.0; 16];
     let mut cursor = 0;
+    let mut block_index = 0;
     while cursor < samples {
-        let end = (cursor + block_size.max(1)).min(samples);
+        let block_size = block_sizes
+            .get(block_index % block_sizes.len().max(1))
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+        block_index += 1;
+        let end = (cursor + block_size).min(samples);
         while cursor < end {
             if note_off_at == Some(cursor) {
                 voice.note_off(0, 69, false, 0.0);
             }
-            let mut left = 0.0;
-            let mut right = 0.0;
-            voice.render_sample(
-                1,
-                params.global.a4_tuning.value(),
-                params.global.pitchbend_range.value(),
-                &bend,
-                &params.env1,
-                params.global.velocity_sensitivity.value(),
-                &mut left,
-                &mut right,
-            );
-            let sample = (left * nih_plug::prelude::util::db_to_gain(-6.0)).tanh();
+            let settings = VoiceRenderSettings {
+                polyphony: 1,
+                a4_tuning: params.global.a4_tuning.value(),
+                pitch_bend_range: params.global.pitchbend_range.value(),
+                pitch_bend: &bend,
+                envelope: params.env1.next_values(),
+                velocity_sensitivity: params.global.velocity_sensitivity.smoothed.next(),
+            };
+            let sample =
+                (voice.render_sample(&settings) * nih_plug::prelude::util::db_to_gain(-6.0)).tanh();
             output.push(sample);
             cursor += 1;
         }

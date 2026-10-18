@@ -7,7 +7,28 @@ Nova is an original hybrid wavetable synthesizer plug-in for VST3, built in Rust
 | Milestone | Status |
 | --- | --- |
 | M0 Foundation | In progress |
-| M1–M20 | Planned — see [ROADMAP.md](ROADMAP.md) |
+| M1 Wavetable engine | Planned |
+| M2 Oscillator section | Planned |
+| M3 OSC page and main interface | Planned |
+| M4 Warp modes | Planned |
+| M5 Dual filters | Planned |
+| M6 Modulation engine | Planned |
+| M7 Modulation interface | Planned |
+| M8 Mixer and routing | Planned |
+| M9 FX rack infrastructure | Planned |
+| M10 Effects | Planned |
+| M11 FX interface | Planned |
+| M12 Arpeggiator | Planned |
+| M13 Sample oscillator | Planned |
+| M14 SFZ multisample | Planned |
+| M15 Granular oscillator | Planned |
+| M16 Spectral oscillator | Planned |
+| M17 Clip sequencer | Planned |
+| M18 Presets and browser | Planned |
+| M19 Wavetable editor | Planned |
+| M20 Performance and polish | Planned |
+
+See [ROADMAP.md](ROADMAP.md) for the detailed checklist.
 
 M0 establishes a playable sine voice, a six-stage amplitude envelope, MIDI pitch bend and sustain, the first interface shell, and the build/test foundation. The remaining oscillator modes, modulation matrix, effects, and sequencers are not implemented yet.
 

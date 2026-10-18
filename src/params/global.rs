@@ -25,6 +25,7 @@ impl Default for GlobalParams {
                 0.7,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
+            .with_smoother(SmoothingStyle::Linear(20.0))
             .with_unit("%")
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
@@ -59,6 +60,7 @@ impl Default for GlobalParams {
                     max: 2.0,
                 },
             )
+            .with_step_size(0.25)
             .with_unit("%")
             .with_value_to_string(Arc::new(|value| format!("{:.0}%", value * 100.0)))
             .with_string_to_value(Arc::new(|value| {
@@ -70,5 +72,13 @@ impl Default for GlobalParams {
                     .map(|value| value / 100.0)
             })),
         }
+    }
+}
+
+impl GlobalParams {
+    pub fn reset_smoothers(&self) {
+        self.velocity_sensitivity
+            .smoothed
+            .reset(self.velocity_sensitivity.value());
     }
 }

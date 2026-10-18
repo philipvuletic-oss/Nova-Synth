@@ -1,3 +1,3 @@
-//! Plugin non-parameter state and migrations are introduced as persistent content is added.
+//! Versioned, non-parameter state and migration entry points for the plugin.
 pub mod migrations;
 pub mod persisted;

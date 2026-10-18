@@ -1,1 +1,1 @@
-//! Polyphase oversampling arrives with the nonlinear-effects milestones.
+//! Polyphase oversampling arrives with nonlinear processing milestones M4, M9, and M10.

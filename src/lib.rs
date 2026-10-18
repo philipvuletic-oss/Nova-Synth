@@ -10,7 +10,7 @@ pub mod ui;
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
-use crate::engine::{AudioTelemetry, KeyboardCommand, VoiceManager};
+use crate::engine::{AudioTelemetry, KeyboardCommand, VoiceManager, VoiceRenderSettings};
 use crate::params::NovaParams;
 use crate::ui::UiShared;
 
@@ -81,11 +81,16 @@ impl Plugin for Nova {
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate.max(1.0);
         self.voices.set_sample_rate(self.sample_rate);
+        self.params.reset_smoothers();
+        if let Ok(mut state) = self.params.persisted.lock() {
+            crate::state::migrations::migrate(&mut state);
+        }
         true
     }
 
     fn reset(&mut self) {
         self.voices.reset();
+        self.params.reset_smoothers();
         self.pitch_bend = [0.0; 16];
         self.sustain = [false; 16];
     }
@@ -96,6 +101,7 @@ impl Plugin for Nova {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let _denormal_guard = crate::dsp::denormal::DenormalGuard::new();
         let started = std::time::Instant::now();
         let mut next_event = context.next_event();
         let max_voices = self.params.global.polyphony.value().clamp(1, 32) as usize;
@@ -105,7 +111,7 @@ impl Plugin for Nova {
 
         for (sample_index, mut channels) in buffer.iter_samples().enumerate() {
             rendered_samples = sample_index + 1;
-            while let Some(command) = self.keyboard_rx.pop().ok() {
+            while let Ok(command) = self.keyboard_rx.pop() {
                 match command {
                     KeyboardCommand::NoteOn { note, velocity } => {
                         self.voices.note_on(
@@ -208,18 +214,21 @@ impl Plugin for Nova {
             let bend_range = self.params.global.pitchbend_range.value().clamp(0.0, 48.0);
             let tuning = self.params.global.a4_tuning.value().clamp(415.0, 466.0);
             let volume = self.params.master_volume.smoothed.next();
-            let mut left = 0.0;
-            let mut right = 0.0;
-            self.voices.render_sample(
-                max_voices,
-                tuning,
-                bend_range,
-                &self.pitch_bend,
-                &self.params.env1,
-                self.params.global.velocity_sensitivity.value(),
-                &mut left,
-                &mut right,
-            );
+            let volume = if volume <= util::db_to_gain(-59.9) {
+                0.0
+            } else {
+                volume
+            };
+            let settings = VoiceRenderSettings {
+                polyphony: max_voices,
+                a4_tuning: tuning,
+                pitch_bend_range: bend_range,
+                pitch_bend: &self.pitch_bend,
+                envelope: self.params.env1.next_values(),
+                velocity_sensitivity: self.params.global.velocity_sensitivity.smoothed.next(),
+            };
+            let mut left = self.voices.render_sample(&settings);
+            let mut right = left;
             left *= volume;
             right *= volume;
             if self.params.global.safety_clipper.value() {

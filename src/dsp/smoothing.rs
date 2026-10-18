@@ -1,1 +1,1 @@
-//! Parameter smoothing is provided by nih-plug; additional DSP smoothing arrives later.
+//! Parameter smoothing uses nih-plug; specialized DSP smoothing arrives with M2 and later modules.

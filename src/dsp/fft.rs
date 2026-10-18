@@ -1,1 +1,1 @@
-//! Shared FFT helpers arrive with the wavetable and spectral milestones.
+//! Shared FFT helpers arrive with wavetable milestone M1 and spectral milestone M16.

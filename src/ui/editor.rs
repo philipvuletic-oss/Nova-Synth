@@ -38,6 +38,10 @@ pub fn editor(params: Arc<NovaParams>, shared: Arc<UiShared>) -> Option<Box<dyn 
             theme::apply(ctx);
             let scale = params.global.gui_scale.value().clamp(0.75, 2.0);
             ctx.set_zoom_factor(scale);
+            if let Ok(mut persisted) = params.persisted.lock() {
+                persisted.gui_scale = scale;
+                crate::state::migrations::migrate(&mut persisted);
+            }
             if let Some(key) = ctx.input(|input| {
                 input.events.iter().find_map(|event| match event {
                     egui::Event::Key {
@@ -63,6 +67,7 @@ pub fn editor(params: Arc<NovaParams>, shared: Arc<UiShared>) -> Option<Box<dyn 
             ResizableWindow::new("nova-main")
                 .min_size(Vec2::new(840.0, 600.0))
                 .show(ctx, egui_state.as_ref(), |ui| {
+                    theme::paint_background(ui);
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
                     draw_top_bar(ui, &params, setter, &telemetry);
                     ui.add_space(2.0);
@@ -92,12 +97,33 @@ fn draw_top_bar(
         .show(ui, |ui| {
             ui.set_min_height(theme::TOP_BAR_HEIGHT);
             ui.horizontal(|ui| {
-                ui.label(
+                let logo = ui.label(
                     egui::RichText::new("NOVA")
                         .size(22.0)
                         .strong()
                         .color(theme::CYAN),
                 );
+                logo.context_menu(|ui| {
+                    let values = [0.75_f32, 1.0, 1.25, 1.5, 1.75, 2.0];
+                    let current = params.global.gui_scale.value();
+                    egui::ComboBox::from_id_salt("nova-gui-scale")
+                        .selected_text(format!("GUI scale · {:.0}%", current * 100.0))
+                        .show_ui(ui, |ui| {
+                            for value in values {
+                                if ui
+                                    .selectable_label(
+                                        (current - value).abs() < 0.001,
+                                        format!("{:.0}%", value * 100.0),
+                                    )
+                                    .clicked()
+                                {
+                                    setter.begin_set_parameter(&params.global.gui_scale);
+                                    setter.set_parameter(&params.global.gui_scale, value);
+                                    setter.end_set_parameter(&params.global.gui_scale);
+                                }
+                            }
+                        });
+                });
                 ui.separator();
                 let _ = ui.button("‹");
                 let _ = ui
@@ -148,8 +174,15 @@ fn draw_modulator_strip(ui: &mut egui::Ui, params: &NovaParams, setter: &ParamSe
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    ui.label(egui::RichText::new("MACROS").color(theme::LABEL_TEXT));
-                    ui.label("8 assignable macro controls · Coming in M6");
+                    ui.label(egui::RichText::new("ENV CURVES").color(theme::LABEL_TEXT));
+                    ui.horizontal(|ui| {
+                        let _ =
+                            widgets::knob::knob(ui, &params.env1.attack_curve, setter, "Attack");
+                        let _ = widgets::knob::knob(ui, &params.env1.decay_curve, setter, "Decay");
+                        let _ =
+                            widgets::knob::knob(ui, &params.env1.release_curve, setter, "Release");
+                    });
+                    ui.label("8 macro knobs · Coming in M6");
                 });
             });
         });
@@ -175,13 +208,31 @@ fn envelope_graph(ui: &mut egui::Ui, params: &NovaParams, setter: &ParamSetter<'
 
     let points = [
         Pos2::new(rect.left(), rect.bottom()),
-        Pos2::new(rect.left() + rect.width() * 0.2, rect.top()),
-        Pos2::new(rect.left() + rect.width() * 0.38, rect.top()),
         Pos2::new(
-            rect.left() + rect.width() * 0.62,
-            rect.bottom() * 0.48 + rect.top() * 0.52,
+            rect.left()
+                + rect.width() * (0.08 + params.env1.delay.unmodulated_normalized_value() * 0.08),
+            rect.bottom(),
         ),
-        Pos2::new(rect.right(), rect.bottom()),
+        Pos2::new(
+            rect.left()
+                + rect.width() * (0.22 + params.env1.attack.unmodulated_normalized_value() * 0.12),
+            rect.top(),
+        ),
+        Pos2::new(
+            rect.left()
+                + rect.width() * (0.42 + params.env1.hold.unmodulated_normalized_value() * 0.08),
+            rect.top(),
+        ),
+        Pos2::new(
+            rect.left()
+                + rect.width() * (0.62 + params.env1.decay.unmodulated_normalized_value() * 0.12),
+            rect.bottom() - rect.height() * params.env1.sustain.unmodulated_normalized_value(),
+        ),
+        Pos2::new(
+            rect.left()
+                + rect.width() * (0.86 + params.env1.release.unmodulated_normalized_value() * 0.14),
+            rect.bottom(),
+        ),
     ];
     painter.add(egui::Shape::line(
         points.to_vec(),
@@ -193,28 +244,53 @@ fn envelope_graph(ui: &mut egui::Ui, params: &NovaParams, setter: &ParamSetter<'
     ));
     for (index, point) in points.into_iter().enumerate() {
         painter.circle_filled(point, 3.5, theme::LIME);
-        if (1..=3).contains(&index) {
+        if (1..=5).contains(&index) {
             let response = ui.interact(
                 Rect::from_center_size(point, Vec2::splat(16.0)),
                 ui.id().with(("env-breakpoint", index)),
                 Sense::drag(),
             );
-            let param = match index {
-                1 => &params.env1.attack,
-                2 => &params.env1.hold,
-                _ => &params.env1.decay,
+            let (time_param, level_param) = match index {
+                1 => (&params.env1.delay, None),
+                2 => (&params.env1.attack, Some(&params.env1.attack_curve)),
+                3 => (&params.env1.hold, None),
+                4 => (&params.env1.decay, Some(&params.env1.sustain)),
+                _ => (&params.env1.release, Some(&params.env1.release_curve)),
             };
+            let drag_id = response.id.with("breakpoint-start");
             if response.drag_started() {
-                setter.begin_set_parameter(param);
+                ui.data_mut(|data| {
+                    data.insert_temp(
+                        drag_id,
+                        (
+                            time_param.unmodulated_normalized_value(),
+                            level_param.map(|param| param.unmodulated_normalized_value()),
+                        ),
+                    )
+                });
+                setter.begin_set_parameter(time_param);
+                if let Some(param) = level_param {
+                    setter.begin_set_parameter(param);
+                }
             }
             if response.dragged() {
-                let normalized = (param.unmodulated_normalized_value()
-                    - response.drag_delta().y * 0.004)
-                    .clamp(0.0, 1.0);
-                setter.set_parameter_normalized(param, normalized);
+                let start = ui
+                    .data(|data| data.get_temp::<(f32, Option<f32>)>(drag_id))
+                    .unwrap_or((time_param.unmodulated_normalized_value(), None));
+                let time = (start.0 + response.drag_delta().x / rect.width()).clamp(0.0, 1.0);
+                setter.set_parameter_normalized(time_param, time);
+                if let (Some(param), Some(start_level)) = (level_param, start.1) {
+                    let level =
+                        (start_level - response.drag_delta().y / rect.height()).clamp(0.0, 1.0);
+                    setter.set_parameter_normalized(param, level);
+                }
             }
             if response.drag_stopped() {
-                setter.end_set_parameter(param);
+                setter.end_set_parameter(time_param);
+                if let Some(param) = level_param {
+                    setter.end_set_parameter(param);
+                }
+                ui.data_mut(|data| data.remove::<(f32, Option<f32>)>(drag_id));
             }
         }
     }
@@ -266,16 +342,17 @@ fn draw_keyboard(ui: &mut egui::Ui, state: &mut AppState, shared: &UiShared) {
                                     ui.allocate_exact_size(Vec2::new(20.0, 46.0), Sense::click());
                                 let down = response.is_pointer_button_down_on();
                                 if down && !state.pressed_keys[index] {
-                                    queue_keyboard(
+                                    state.pressed_keys[index] = queue_keyboard(
                                         shared,
                                         KeyboardCommand::NoteOn {
                                             note,
                                             velocity: 0.8,
                                         },
                                     );
-                                    state.pressed_keys[index] = true;
-                                } else if !down && state.pressed_keys[index] {
-                                    queue_keyboard(shared, KeyboardCommand::NoteOff { note });
+                                } else if !down
+                                    && state.pressed_keys[index]
+                                    && queue_keyboard(shared, KeyboardCommand::NoteOff { note })
+                                {
                                     state.pressed_keys[index] = false;
                                 }
                                 let fill = if state.pressed_keys[index] {
@@ -309,8 +386,10 @@ fn draw_keyboard(ui: &mut egui::Ui, state: &mut AppState, shared: &UiShared) {
         });
 }
 
-fn queue_keyboard(shared: &UiShared, command: KeyboardCommand) {
+fn queue_keyboard(shared: &UiShared, command: KeyboardCommand) -> bool {
     if let Ok(mut producer) = shared.keyboard_tx.lock() {
-        let _ = producer.push(command);
+        producer.push(command).is_ok()
+    } else {
+        false
     }
 }
