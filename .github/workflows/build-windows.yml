@@ -24,3 +24,66 @@ jobs:
         with:
           name: nova-windows
           path: target/bundled
+  snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Install Linux libraries needed by nih-plug and egui
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl-dev libjack-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Render GUI screenshots (headless, CPU)
+        run: cargo run --release -p snapshot -- docs/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nova-screenshots
+          path: docs/screenshots
+      - name: Visual regression guard (fresh render vs golden images)
+        run: cargo run --release -p snapshot -- --diff docs/screenshots/golden docs/screenshots target/golden-diff
+      - name: Golden changes versus the base branch (pull requests only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_MESSAGES: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          git fetch --unshallow origin "refs/pull/${PR_NUMBER}/head"
+          mkdir -p target/base-golden
+          git archive "origin/$BASE_REF" docs/screenshots/golden 2>/dev/null | tar -x -C target/base-golden || true
+          if [ -d target/base-golden/docs/screenshots/golden ]; then BEFORE=target/base-golden/docs/screenshots/golden; else BEFORE=target/base-golden/empty; mkdir -p "$BEFORE"; fi
+          if cargo run --release -p snapshot -- --diff "$BEFORE" docs/screenshots/golden target/golden-before-after; then
+            echo "Golden screenshots unchanged versus $BASE_REF."
+          else
+            echo "## Golden screenshots changed (before | after)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Download artifact nova-golden-before-after for side-by-side images." >> "$GITHUB_STEP_SUMMARY"
+            if ! git log --format=%B "origin/$BASE_REF..FETCH_HEAD" 2>/dev/null | grep -q '\[update-goldens\]' && ! echo "$HEAD_MESSAGES" | grep -q '\[update-goldens\]'; then
+              echo "::error::Golden screenshots changed but no PR commit message or title contains [update-goldens]."
+              exit 1
+            fi
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nova-golden-before-after
+          path: |
+            target/golden-diff
+            target/golden-before-after
+          if-no-files-found: ignore
+      - name: Render audio demos and sound checks
+        run: cargo run --release -p demo_render -- target/demos
+      - name: Audio demo summary
+        run: |
+          echo "## Nova audio demo metrics" >> "$GITHUB_STEP_SUMMARY"
+          cat target/demos/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nova-audio-demos
+          path: target/demos

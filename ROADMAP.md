@@ -21,3 +21,7 @@
 - [ ] M18 Presets, browser, undo/redo, A/B, MIDI learn, factory presets
 - [ ] M19 Wavetable editor
 - [ ] M20 Performance, QA and polish pass
+
+## Session 2 status (partial)
+- M2 partial: Osc A unison (1–16 voices, detune, range, blend, width, random phase) done and tested. Remaining: Osc B/C, sub, noise, voicing, stack modes, drift.
+- M5, M9, M10: not started.

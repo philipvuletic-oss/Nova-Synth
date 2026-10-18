@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, params: &NovaParams, setter: &ParamSetter<'_>, shared: 
                         ui.label(egui::RichText::new(status).color(color).small());
                     }
                 }
-                ui.menu_button("Import ▾", |ui| {
+                ui.menu_button("Import…", |ui| {
                     let options_id = ui.id().with("wavetable-import-options");
                     let mut frame_size = ui
                         .data(|data| data.get_temp::<usize>(options_id))

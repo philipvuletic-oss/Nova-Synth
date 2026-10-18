@@ -14,7 +14,7 @@ pub fn knob_with_modulation(
     modulation: Option<(f32, f32)>,
     modulation_count: usize,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(66.0), Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(66.0, 72.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let center = Pos2::new(rect.center().x, rect.top() + 28.0);
     let radius = 22.0;
@@ -84,7 +84,7 @@ pub fn knob_with_modulation(
 
     let text = param.to_string();
     painter.text(
-        Pos2::new(rect.center().x, rect.top() + 53.0),
+        Pos2::new(rect.center().x, rect.top() + 54.0),
         egui::Align2::CENTER_CENTER,
         &text,
         egui::FontId::monospace(10.0),

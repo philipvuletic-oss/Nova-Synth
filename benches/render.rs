@@ -33,6 +33,7 @@ fn render_16_voices(criterion: &mut Criterion) {
                     interpolation: FrameInterpolation::Frames,
                     oscillator_level: 1.0,
                     oscillator_enabled: true,
+                    unison: Default::default(),
                 };
                 black_box(voices.render_sample(&settings));
             }

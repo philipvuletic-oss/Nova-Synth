@@ -4,6 +4,7 @@ pub mod content;
 pub mod dsp;
 pub mod engine;
 pub mod params;
+pub mod settings;
 pub mod state;
 pub mod ui;
 
@@ -23,6 +24,7 @@ pub struct Nova {
     sustain: [bool; 16],
     mod_wheel: [f32; 16],
     channel_pressure: [f32; 16],
+    dc_blockers: [crate::dsp::dc_blocker::DcBlocker; 2],
     keyboard_rx: rtrb::Consumer<KeyboardCommand>,
     telemetry: Arc<AudioTelemetry>,
     ui_shared: Arc<UiShared>,
@@ -31,6 +33,13 @@ pub struct Nova {
 
 impl Default for Nova {
     fn default() -> Self {
+        Self::with_params(NovaParams::from_settings(&settings::load()))
+    }
+}
+
+impl Nova {
+    /// Builds the plugin around an existing parameter set (used by offline tools and tests).
+    pub fn with_params(params: NovaParams) -> Self {
         let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(256);
         let telemetry = Arc::new(AudioTelemetry::default());
         let wavetable = Arc::new(WavetableStore::new(Wavetable::fallback_sine(48_000.0)));
@@ -40,13 +49,14 @@ impl Default for Nova {
             wavetable.clone(),
         ));
         Self {
-            params: Arc::new(NovaParams::new()),
+            params: Arc::new(params),
             voices: VoiceManager::new(48_000.0),
             sample_rate: 48_000.0,
             pitch_bend: [0.0; 16],
             sustain: [false; 16],
             mod_wheel: [0.0; 16],
             channel_pressure: [1.0; 16],
+            dc_blockers: [crate::dsp::dc_blocker::DcBlocker::new(48_000.0); 2],
             keyboard_rx,
             telemetry,
             ui_shared,
@@ -93,6 +103,9 @@ impl Plugin for Nova {
             std::sync::atomic::Ordering::Relaxed,
         );
         self.voices.set_sample_rate(self.sample_rate);
+        for blocker in &mut self.dc_blockers {
+            blocker.set_sample_rate(self.sample_rate);
+        }
         self.params.reset_smoothers();
         let generation = self
             .ui_shared
@@ -125,6 +138,9 @@ impl Plugin for Nova {
 
     fn reset(&mut self) {
         self.voices.reset();
+        for blocker in &mut self.dc_blockers {
+            blocker.reset();
+        }
         self.params.reset_smoothers();
         self.pitch_bend = [0.0; 16];
         self.sustain = [false; 16];
@@ -277,9 +293,16 @@ impl Plugin for Nova {
                 },
                 oscillator_level: self.params.osc_a.level.smoothed.next(),
                 oscillator_enabled: self.params.osc_a.enable.value(),
+                unison: crate::engine::UnisonSettings {
+                    voices: self.params.osc_a.uni_voices.value().clamp(1, 16) as usize,
+                    detune: self.params.osc_a.uni_detune.value(),
+                    range_semitones: self.params.osc_a.uni_range.value(),
+                    blend: self.params.osc_a.uni_blend.value(),
+                    width: self.params.osc_a.uni_width.value(),
+                    random_phase: self.params.osc_a.uni_rand_phase.value(),
+                },
             };
-            let mut left = self.voices.render_sample(&settings);
-            let mut right = left;
+            let (mut left, mut right) = self.voices.render_stereo(&settings);
             let pan = self.params.osc_a.pan.smoothed.next().clamp(-1.0, 1.0);
             let pan_angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
             left *= volume * pan_angle.cos() * std::f32::consts::SQRT_2;
@@ -294,6 +317,8 @@ impl Plugin for Nova {
             if !right.is_finite() {
                 right = 0.0;
             }
+            left = self.dc_blockers[0].process(left);
+            right = self.dc_blockers[1].process(right);
             peak_left = peak_left.max(left.abs());
             peak_right = peak_right.max(right.abs());
 
@@ -331,6 +356,18 @@ impl Plugin for Nova {
 }
 
 impl Nova {
+    /// Shared handle to the parameter tree.
+    pub fn nova_params(&self) -> Arc<NovaParams> {
+        self.params.clone()
+    }
+
+    /// True while a wavetable is being generated/restored on the background thread.
+    pub fn wavetable_loading(&self) -> bool {
+        self.ui_shared
+            .wavetable_loading
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn mod_wheel_value(&self, channel: u8) -> f32 {
         self.mod_wheel[channel.min(15) as usize]
     }

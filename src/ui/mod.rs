@@ -1,6 +1,9 @@
 //! The egui application shell and controls for Nova.
+pub mod app;
 pub mod editor;
+pub mod motion;
 pub mod pages;
+pub mod scale;
 pub mod theme;
 pub mod widgets;
 

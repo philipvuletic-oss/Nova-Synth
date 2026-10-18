@@ -4,7 +4,7 @@ pub const WINDOW_WIDTH: f32 = 1240.0;
 pub const WINDOW_HEIGHT: f32 = 780.0;
 pub const TOP_BAR_HEIGHT: f32 = 48.0;
 pub const TAB_HEIGHT: f32 = 36.0;
-pub const MODULATOR_HEIGHT: f32 = 220.0;
+pub const MODULATOR_HEIGHT: f32 = 190.0;
 pub const KEYBOARD_HEIGHT: f32 = 56.0;
 pub const PANEL_RADIUS: u8 = 12;
 

@@ -86,6 +86,7 @@ fn render_with_wavetable_blocks(
                 interpolation,
                 oscillator_level: 1.0,
                 oscillator_enabled: true,
+                unison: Default::default(),
             };
             let sample =
                 (voice.render_sample(&settings) * nih_plug::prelude::util::db_to_gain(-6.0)).tanh();
