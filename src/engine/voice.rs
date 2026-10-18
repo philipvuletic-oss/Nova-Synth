@@ -73,7 +73,7 @@ pub fn unison_voice_layout(index: usize, count: usize, s: &UnisonSettings) -> (f
     let pan = if is_centre {
         0.0
     } else {
-        let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+        let side = if index.is_multiple_of(2) { -1.0 } else { 1.0 };
         side * s.width.clamp(0.0, 1.0) * (0.35 + 0.65 * position.abs())
     };
     (detune, gain, pan)
