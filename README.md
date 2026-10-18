@@ -7,7 +7,7 @@ Nova is an original hybrid wavetable synthesizer plug-in for VST3, built in Rust
 | Milestone | Status |
 | --- | --- |
 | M0 Foundation | In progress |
-| M1 Wavetable engine | Planned |
+| M1 Wavetable engine | In progress |
 | M2 Oscillator section | Planned |
 | M3 OSC page and main interface | Planned |
 | M4 Warp modes | Planned |
@@ -30,7 +30,7 @@ Nova is an original hybrid wavetable synthesizer plug-in for VST3, built in Rust
 
 See [ROADMAP.md](ROADMAP.md) for the detailed checklist.
 
-M0 establishes a playable sine voice, a six-stage amplitude envelope, MIDI pitch bend and sustain, the first interface shell, and the build/test foundation. The remaining oscillator modes, modulation matrix, effects, and sequencers are not implemented yet.
+The M1 work adds procedural factory wavetables, FFT-derived pitch mipmaps, three wavetable position interpolation modes, stereo WAV import/export, and the first OSC A controls. M1 remains in progress until its remaining real-time/host acceptance checks are verified.
 
 ## Build
 
@@ -58,6 +58,6 @@ The VST3 bundle is written under `target/bundled`. On Windows, CI uploads it as 
 
 ## Current interface and limitations
 
-The resizable window uses the Nova dark-glass theme. The header contains the NOVA logo, preset navigation placeholders, CPU/voice readouts, Master Volume, and stereo output meter. All seven page tabs are present; feature pages identify the milestone in which their controls will arrive. The bottom area contains draggable ENV 1 breakpoints and envelope knobs, a macro placeholder, pitch/mod wheels, and a four-octave playable keyboard.
+The resizable window uses the Nova dark-glass theme. The header contains the NOVA logo, preset navigation placeholders, CPU/voice readouts, Master Volume, and stereo output meter. The OSC page now shows an Osc A wavetable card with grouped factory tables, background WAV import/export, frame-size and auto-pitch import options, position/interpolation/level/pan controls, and a 2D frame display. Other pages identify the milestone in which their controls will arrive. The bottom area contains draggable ENV 1 breakpoints and envelope knobs, a macro placeholder, pitch/mod wheels, and a four-octave playable keyboard.
 
-Known limitations: only the M0 sine voice and amplitude envelope are implemented; preset controls, MIDI learn, modulation assignment, other pages, extra oscillators, and font embedding are placeholders or planned work. VST3 is the only exported plug-in format.
+Known limitations: Smooth mode uses a precomputed spectral morph grid rather than a continuously recomputed spectral interpolation; factory selection and WAV decoding are covered by offline tests but have not yet been verified in Ableton on Windows. The remainder of the oscillator section, preset controls, MIDI learn, modulation assignment, other pages, and font embedding are placeholders or planned work. VST3 is the only exported plug-in format.

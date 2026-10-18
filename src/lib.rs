@@ -10,9 +10,11 @@ pub mod ui;
 use nih_plug::prelude::*;
 use std::sync::Arc;
 
+use crate::content::wavetables::{FrameInterpolation, Wavetable};
 use crate::engine::{AudioTelemetry, KeyboardCommand, VoiceManager, VoiceRenderSettings};
 use crate::params::NovaParams;
 use crate::ui::UiShared;
+use arc_swap::ArcSwap;
 
 pub struct Nova {
     params: Arc<NovaParams>,
@@ -25,13 +27,19 @@ pub struct Nova {
     keyboard_rx: rtrb::Consumer<KeyboardCommand>,
     telemetry: Arc<AudioTelemetry>,
     ui_shared: Arc<UiShared>,
+    wavetable: Arc<ArcSwap<Wavetable>>,
 }
 
 impl Default for Nova {
     fn default() -> Self {
         let (keyboard_tx, keyboard_rx) = rtrb::RingBuffer::new(256);
         let telemetry = Arc::new(AudioTelemetry::default());
-        let ui_shared = Arc::new(UiShared::new(keyboard_tx, telemetry.clone()));
+        let wavetable = Arc::new(ArcSwap::from_pointee(Wavetable::fallback_sine(48_000.0)));
+        let ui_shared = Arc::new(UiShared::new(
+            keyboard_tx,
+            telemetry.clone(),
+            wavetable.clone(),
+        ));
         Self {
             params: Arc::new(NovaParams::new()),
             voices: VoiceManager::new(48_000.0),
@@ -43,6 +51,7 @@ impl Default for Nova {
             keyboard_rx,
             telemetry,
             ui_shared,
+            wavetable,
         }
     }
 }
@@ -80,11 +89,39 @@ impl Plugin for Nova {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate.max(1.0);
+        self.ui_shared.wavetable_sample_rate.store(
+            self.sample_rate.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.voices.set_sample_rate(self.sample_rate);
         self.params.reset_smoothers();
-        if let Ok(mut state) = self.params.persisted.lock() {
+        let generation = self
+            .ui_shared
+            .wavetable_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        let persisted = if let Ok(mut state) = self.params.persisted.lock() {
             crate::state::migrations::migrate(&mut state);
-        }
+            Some(state.clone())
+        } else {
+            None
+        };
+        let current_table = self.wavetable.load_full();
+        let wavetable = self.wavetable.clone();
+        let generation_counter = self.ui_shared.wavetable_generation.clone();
+        let loading = self.ui_shared.wavetable_loading.clone();
+        let sample_rate = self.sample_rate;
+        loading.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let restored = restore_wavetable(persisted, sample_rate)
+                .or_else(|| current_table.rebuild_for_sample_rate(sample_rate).ok());
+            if generation_counter.load(std::sync::atomic::Ordering::Relaxed) == generation {
+                if let Some(table) = restored {
+                    wavetable.store(Arc::new(table));
+                }
+                loading.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
         true
     }
 
@@ -106,6 +143,12 @@ impl Plugin for Nova {
         let mut next_event = context.next_event();
         let max_voices = self.params.global.polyphony.value().clamp(1, 32) as usize;
         self.voices.set_polyphony(max_voices);
+        self.voices.configure_phase(
+            self.params.osc_a.phase_memory.value(),
+            self.params.osc_a.phase_rand.value(),
+            self.params.osc_a.phase.value(),
+        );
+        let wavetable = self.wavetable.load();
         let mut peak_left = 0.0f32;
         let mut peak_right = 0.0f32;
         let mut rendered_samples = 0usize;
@@ -227,11 +270,22 @@ impl Plugin for Nova {
                 pitch_bend: &self.pitch_bend,
                 envelope: self.params.env1.next_values(),
                 velocity_sensitivity: self.params.global.velocity_sensitivity.smoothed.next(),
+                wavetable: Some(&wavetable),
+                wt_position: self.params.osc_a.wt_position.smoothed.next(),
+                interpolation: match self.params.osc_a.interp_mode.value() {
+                    1 => FrameInterpolation::Smooth,
+                    2 => FrameInterpolation::Step,
+                    _ => FrameInterpolation::Frames,
+                },
+                oscillator_level: self.params.osc_a.level.smoothed.next(),
+                oscillator_enabled: self.params.osc_a.enable.value(),
             };
             let mut left = self.voices.render_sample(&settings);
             let mut right = left;
-            left *= volume;
-            right *= volume;
+            let pan = self.params.osc_a.pan.smoothed.next().clamp(-1.0, 1.0);
+            let pan_angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            left *= volume * pan_angle.cos() * std::f32::consts::SQRT_2;
+            right *= volume * pan_angle.sin() * std::f32::consts::SQRT_2;
             if self.params.global.safety_clipper.value() {
                 left = left.tanh();
                 right = right.tanh();
@@ -280,6 +334,45 @@ impl Nova {
     pub fn mod_wheel_value(&self, channel: u8) -> f32 {
         self.mod_wheel[channel.min(15) as usize]
     }
+}
+
+fn restore_wavetable(
+    state: Option<crate::state::persisted::VersionedState>,
+    sample_rate: f32,
+) -> Option<Wavetable> {
+    let state = state?;
+    let imported = state.imported_wavetable_frames.as_ref().and_then(|frames| {
+        let frames = frames
+            .iter()
+            .map(|frame| {
+                frame
+                    .iter()
+                    .map(|sample| *sample as f32 / i16::MAX as f32)
+                    .collect()
+            })
+            .collect();
+        Wavetable::from_frames(
+            state
+                .imported_wavetable_name
+                .clone()
+                .unwrap_or_else(|| String::from("Imported wavetable")),
+            state
+                .imported_wavetable_source
+                .clone()
+                .unwrap_or_else(|| String::from("Embedded project data")),
+            frames,
+            sample_rate,
+        )
+        .ok()
+    });
+    imported.or_else(|| {
+        crate::content::wavetables::FACTORY_TABLES
+            .iter()
+            .position(|table| table.name == state.selected_wavetable)
+            .and_then(|index| {
+                crate::content::factory::generate_factory_wavetable(index, sample_rate).ok()
+            })
+    })
 }
 
 impl Vst3Plugin for Nova {

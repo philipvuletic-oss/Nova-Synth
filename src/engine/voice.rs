@@ -1,3 +1,4 @@
+use crate::content::wavetables::{FrameInterpolation, Wavetable};
 use crate::params::envelope::EnvelopeValues;
 use std::sync::atomic::AtomicU32;
 
@@ -10,6 +11,11 @@ pub struct VoiceRenderSettings<'a> {
     pub pitch_bend: &'a [f32; 16],
     pub envelope: EnvelopeValues,
     pub velocity_sensitivity: f32,
+    pub wavetable: Option<&'a Wavetable>,
+    pub wt_position: f32,
+    pub interpolation: FrameInterpolation,
+    pub oscillator_level: f32,
+    pub oscillator_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -183,6 +189,7 @@ struct Voice {
     velocity: f32,
     pressure: f32,
     phase: f64,
+    phase_offset: f32,
     age: u64,
     envelope: Envelope,
 }
@@ -198,6 +205,7 @@ impl Default for Voice {
             velocity: 0.0,
             pressure: 1.0,
             phase: 0.0,
+            phase_offset: 0.0,
             age: 0,
             envelope: Envelope::default(),
         }
@@ -208,6 +216,9 @@ pub struct VoiceManager {
     voices: [Voice; MAX_VOICES],
     sample_rate: f32,
     age: u64,
+    phase_memory: bool,
+    phase_randomization: f32,
+    phase_start: f64,
 }
 
 impl VoiceManager {
@@ -216,6 +227,9 @@ impl VoiceManager {
             voices: [Voice::default(); MAX_VOICES],
             sample_rate: sample_rate.max(1.0),
             age: 0,
+            phase_memory: false,
+            phase_randomization: 0.0,
+            phase_start: 0.0,
         }
     }
 
@@ -233,6 +247,17 @@ impl VoiceManager {
     pub fn set_polyphony(&mut self, polyphony: usize) {
         let limit = polyphony.clamp(1, MAX_VOICES);
         self.voices[limit..].fill(Voice::default());
+    }
+
+    pub fn configure_phase(
+        &mut self,
+        phase_memory: bool,
+        phase_randomization: f32,
+        phase_start_degrees: f32,
+    ) {
+        self.phase_memory = phase_memory;
+        self.phase_randomization = phase_randomization.clamp(0.0, 1.0);
+        self.phase_start = phase_start_degrees.clamp(0.0, 360.0) as f64 / 360.0;
     }
 
     pub fn note_on(
@@ -254,6 +279,9 @@ impl VoiceManager {
             .or(free)
             .unwrap_or_else(|| self.steal_candidate(limit));
         let voice = &mut self.voices[selected];
+        if !self.phase_memory {
+            voice.phase = self.phase_start;
+        }
         voice.active = true;
         voice.note = note.min(127);
         voice.channel = channel.min(15);
@@ -262,6 +290,8 @@ impl VoiceManager {
         voice.velocity = velocity.clamp(0.0, 1.0);
         voice.pressure = pressure.clamp(0.0, 1.0);
         voice.age = self.age;
+        let random = self.age.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        voice.phase_offset = ((random >> 40) as u32 as f32 / (1u32 << 24) as f32) * 2.0 - 1.0;
         voice.envelope.trigger(delay.max(0.0));
         selected
     }
@@ -333,6 +363,7 @@ impl VoiceManager {
     pub fn render_sample(&mut self, settings: &VoiceRenderSettings<'_>) -> f32 {
         let limit = settings.polyphony.clamp(1, MAX_VOICES);
         let sensitivity = settings.velocity_sensitivity.clamp(0.0, 1.0);
+        let phase_randomization = self.phase_randomization;
         let mut output = 0.0f32;
         for voice in &mut self.voices[..limit] {
             if !voice.active {
@@ -345,10 +376,28 @@ impl VoiceManager {
             let amplitude = voice.envelope.next(self.sample_rate, settings.envelope);
             let velocity_gain = 1.0 - sensitivity + sensitivity * voice.velocity;
             let pressure_gain = 0.5 + voice.pressure * 0.5;
-            let contribution = (voice.phase * std::f64::consts::TAU).sin() as f32
+            let phase =
+                (voice.phase + (voice.phase_offset * phase_randomization) as f64).rem_euclid(1.0);
+            let oscillator = if settings.oscillator_enabled {
+                settings.wavetable.map_or_else(
+                    || (phase * std::f64::consts::TAU).sin() as f32,
+                    |wavetable| {
+                        wavetable.sample(
+                            phase,
+                            frequency,
+                            settings.wt_position,
+                            settings.interpolation,
+                        )
+                    },
+                )
+            } else {
+                0.0
+            };
+            let contribution = oscillator
                 * amplitude
                 * velocity_gain
-                * pressure_gain;
+                * pressure_gain
+                * settings.oscillator_level.clamp(0.0, 1.0);
             voice.phase += frequency as f64 / self.sample_rate as f64;
             voice.phase -= voice.phase.floor();
             if !contribution.is_finite() || !voice.phase.is_finite() {

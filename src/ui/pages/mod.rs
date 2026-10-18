@@ -10,9 +10,15 @@ pub mod mix;
 pub mod modulation;
 pub mod osc;
 
-pub fn show(ui: &mut Ui, page: usize, params: &NovaParams, setter: &ParamSetter<'_>) {
+pub fn show(
+    ui: &mut Ui,
+    page: usize,
+    params: &NovaParams,
+    setter: &ParamSetter<'_>,
+    shared: &crate::ui::UiShared,
+) {
     match page {
-        0 => osc::show(ui),
+        0 => osc::show(ui, params, setter, shared),
         1 => mix::show(ui),
         2 => fx::show(ui),
         3 => modulation::show(ui),
@@ -20,7 +26,7 @@ pub fn show(ui: &mut Ui, page: usize, params: &NovaParams, setter: &ParamSetter<
         5 => clip::show(ui),
         _ => global::show(ui),
     }
-    let _ = (params, setter);
+    let _ = (params, setter, shared);
 }
 
 pub fn coming_soon(ui: &mut Ui, title: &str, milestone: &str, description: &str) {

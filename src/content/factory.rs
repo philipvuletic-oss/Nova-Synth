@@ -1,1 +1,1 @@
-//! Factory wavetables, noise, impulse responses, and presets arrive in milestones M1, M2, M10, and M18.
+pub use super::wavetables::{generate_factory as generate_factory_wavetable, FACTORY_TABLES};

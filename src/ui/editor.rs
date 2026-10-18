@@ -86,7 +86,9 @@ pub fn editor(params: Arc<NovaParams>, shared: Arc<UiShared>) -> Option<Box<dyn 
                     egui::ScrollArea::vertical()
                         .id_salt("nova-page-area")
                         .max_height((ui.available_height() - 308.0).max(120.0))
-                        .show(ui, |ui| pages::show(ui, state.page, &params, setter));
+                        .show(ui, |ui| {
+                            pages::show(ui, state.page, &params, setter, &shared)
+                        });
                     draw_modulator_strip(ui, &params, setter);
                     draw_keyboard(ui, state, &shared);
                 });

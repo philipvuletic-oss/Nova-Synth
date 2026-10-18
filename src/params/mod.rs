@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 pub mod envelope;
 pub mod global;
+pub mod oscillator;
 
 use crate::state::persisted::VersionedState;
 use envelope::Env1Params;
 use global::GlobalParams;
+use oscillator::OscillatorParams;
 
 #[derive(Params)]
 pub struct NovaParams {
@@ -22,6 +24,9 @@ pub struct NovaParams {
 
     #[nested(group = "global")]
     pub global: GlobalParams,
+
+    #[nested(group = "osc_a")]
+    pub osc_a: OscillatorParams,
 
     #[persist = "nova-state"]
     pub persisted: Arc<std::sync::Mutex<VersionedState>>,
@@ -63,6 +68,7 @@ impl NovaParams {
             })),
             env1: Env1Params::default(),
             global: GlobalParams::default(),
+            osc_a: OscillatorParams::default(),
             persisted: Arc::new(std::sync::Mutex::new(VersionedState::default())),
         }
     }
@@ -81,5 +87,6 @@ impl NovaParams {
             .reset(self.master_volume.value());
         self.env1.reset_smoothers();
         self.global.reset_smoothers();
+        self.osc_a.reset_smoothers();
     }
 }

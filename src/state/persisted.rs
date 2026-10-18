@@ -2,13 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_STATE_VERSION: u32 = 1;
+pub const CURRENT_STATE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VersionedState {
     pub state_version: u32,
     pub gui_scale: f32,
+    pub selected_wavetable: String,
+    pub imported_wavetable_name: Option<String>,
+    pub imported_wavetable_source: Option<String>,
+    pub imported_wavetable_frames: Option<Vec<Vec<i16>>>,
 }
 
 impl Default for VersionedState {
@@ -16,6 +20,10 @@ impl Default for VersionedState {
         Self {
             state_version: 0,
             gui_scale: 1.0,
+            selected_wavetable: String::from("Basic Shapes"),
+            imported_wavetable_name: None,
+            imported_wavetable_source: None,
+            imported_wavetable_frames: None,
         }
     }
 }
@@ -26,6 +34,20 @@ impl VersionedState {
             self.gui_scale = 1.0;
         }
         self.gui_scale = self.gui_scale.clamp(0.75, 2.0);
+        if self.selected_wavetable.is_empty() {
+            self.selected_wavetable = String::from("Basic Shapes");
+        }
+        if let Some(frames) = self.imported_wavetable_frames.as_mut() {
+            frames.truncate(256);
+            for frame in frames.iter_mut() {
+                frame.truncate(2048);
+            }
+            if frames.is_empty() || frames.iter().any(|frame| frame.len() != 2048) {
+                self.imported_wavetable_frames = None;
+                self.imported_wavetable_name = None;
+                self.imported_wavetable_source = None;
+            }
+        }
         if self.state_version < CURRENT_STATE_VERSION {
             self.state_version = CURRENT_STATE_VERSION;
         }
@@ -41,6 +63,7 @@ mod tests {
         let mut state = VersionedState {
             state_version: 0,
             gui_scale: 4.0,
+            ..VersionedState::default()
         };
         state.migrate();
         assert_eq!(state.state_version, CURRENT_STATE_VERSION);

@@ -1,4 +1,5 @@
 use nova::{
+    content::wavetables::FrameInterpolation,
     engine::{VoiceManager, VoiceRenderSettings},
     params::NovaParams,
 };
@@ -45,6 +46,11 @@ pub fn render_with_blocks(
                 pitch_bend: &bend,
                 envelope: params.env1.next_values(),
                 velocity_sensitivity: params.global.velocity_sensitivity.smoothed.next(),
+                wavetable: None,
+                wt_position: 0.0,
+                interpolation: FrameInterpolation::Frames,
+                oscillator_level: 1.0,
+                oscillator_enabled: true,
             };
             let sample =
                 (voice.render_sample(&settings) * nih_plug::prelude::util::db_to_gain(-6.0)).tanh();
