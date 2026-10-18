@@ -1,0 +1,23 @@
+# Nova roadmap (Copilot: tick boxes as milestones are completed)
+
+- [ ] M0 Foundation: rules, CI, agent setup, architecture skeleton, sine voice + ADSR, theme, knob widget, app shell
+- [ ] M1 Wavetable engine: mipmapped band-limited wavetables, interpolation modes, factory tables, WAV import
+- [ ] M2 Oscillator section: Osc A/B/C, sub, noise, unison, tuning, voicing, routing
+- [ ] M3 GUI: OSC page with 3D wavetable displays, sub/noise cards, top bar, tabs, keyboard strip
+- [ ] M4 Warp modes + dual warp
+- [ ] M5 Dual filters (all filter models) + filter GUI
+- [ ] M6 Modulation engine: 4 envelopes, 10 LFOs, 8 macros, all sources, matrix
+- [ ] M7 Modulation GUI: drag-and-drop, knob mod rings, envelope/LFO editors, MOD page
+- [ ] M8 Mixer + routing + MIX page
+- [ ] M9 FX rack infrastructure, busses, splitters + Distortion, EQ, Filter, Compressor/Multiband, Utility
+- [ ] M10 FX: Chorus, Flanger, Phaser, Hyper/Dimension, Delay, Reverb (5 types), Convolve, Bode
+- [ ] M11 FX GUI page
+- [ ] M12 Arpeggiator + ARP page + key/scale lock
+- [ ] M13 Sample oscillator mode
+- [ ] M14 Multisample (SFZ) mode
+- [ ] M15 Granular mode
+- [ ] M16 Spectral mode
+- [ ] M17 Clip sequencer + CLIP page
+- [ ] M18 Presets, browser, undo/redo, A/B, MIDI learn, factory presets
+- [ ] M19 Wavetable editor
+- [ ] M20 Performance, QA and polish pass
