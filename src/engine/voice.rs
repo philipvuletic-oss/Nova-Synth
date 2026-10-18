@@ -16,6 +16,67 @@ pub struct VoiceRenderSettings<'a> {
     pub interpolation: FrameInterpolation,
     pub oscillator_level: f32,
     pub oscillator_enabled: bool,
+    pub unison: UnisonSettings,
+}
+
+pub const MAX_UNISON: usize = 16;
+
+/// Unison parameters for one oscillator. `Default` is a single plain voice (no unison).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnisonSettings {
+    pub voices: usize,
+    /// 0..1 perceptual detune amount.
+    pub detune: f32,
+    /// Detune range in semitones at detune = 1.
+    pub range_semitones: f32,
+    /// 0 = centre voice only, 1 = side voices only (equal power).
+    pub blend: f32,
+    /// 0..1 stereo width.
+    pub width: f32,
+    /// 0..1 amount of random start phase per unison voice.
+    pub random_phase: f32,
+}
+
+impl Default for UnisonSettings {
+    fn default() -> Self {
+        Self {
+            voices: 1,
+            detune: 0.25,
+            range_semitones: 2.0,
+            blend: 0.75,
+            width: 1.0,
+            random_phase: 1.0,
+        }
+    }
+}
+
+/// Per-voice detune (semitones), gain and pan for unison voice `index` of `count`.
+/// Detune is non-linear: outer voices spread much further than inner ones.
+pub fn unison_voice_layout(index: usize, count: usize, s: &UnisonSettings) -> (f32, f32, f32) {
+    if count <= 1 {
+        return (0.0, 1.0, 0.0);
+    }
+    let position = 2.0 * index as f32 / (count - 1) as f32 - 1.0;
+    let curved = position.signum() * position.abs().powf(1.6);
+    let amount = s.detune.clamp(0.0, 1.0).powf(1.5) * s.range_semitones.clamp(0.0, 48.0);
+    let detune = curved * amount;
+    let blend = s.blend.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2;
+    let odd = count % 2 == 1;
+    let is_centre = odd && index == count / 2;
+    let gain = if !odd {
+        1.0 / (count as f32).sqrt()
+    } else if is_centre {
+        blend.cos()
+    } else {
+        blend.sin() / ((count - 1) as f32).sqrt()
+    };
+    let pan = if is_centre {
+        0.0
+    } else {
+        let side = if index % 2 == 0 { -1.0 } else { 1.0 };
+        side * s.width.clamp(0.0, 1.0) * (0.35 + 0.65 * position.abs())
+    };
+    (detune, gain, pan)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -190,6 +251,8 @@ struct Voice {
     pressure: f32,
     phase: f64,
     phase_offset: f32,
+    uni_phase: [f64; MAX_UNISON],
+    uni_start: [f32; MAX_UNISON],
     age: u64,
     envelope: Envelope,
 }
@@ -206,6 +269,8 @@ impl Default for Voice {
             pressure: 1.0,
             phase: 0.0,
             phase_offset: 0.0,
+            uni_phase: [0.0; MAX_UNISON],
+            uni_start: [0.0; MAX_UNISON],
             age: 0,
             envelope: Envelope::default(),
         }
@@ -292,6 +357,15 @@ impl VoiceManager {
         voice.age = self.age;
         let random = self.age.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         voice.phase_offset = ((random >> 40) as u32 as f32 / (1u32 << 24) as f32) * 2.0 - 1.0;
+        let mut state = random ^ 0xD1B5_4A32_D192_ED03;
+        for start in &mut voice.uni_start {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            *start = ((z >> 40) as u32 as f32) / (1u32 << 24) as f32;
+        }
+        voice.uni_phase = [voice.phase; MAX_UNISON];
         voice.envelope.trigger(delay.max(0.0));
         selected
     }
@@ -360,55 +434,89 @@ impl VoiceManager {
         }
     }
 
+    /// Mono mix (left channel); identical to the old output when unison is off.
     pub fn render_sample(&mut self, settings: &VoiceRenderSettings<'_>) -> f32 {
+        self.render_stereo(settings).0
+    }
+
+    pub fn render_stereo(&mut self, settings: &VoiceRenderSettings<'_>) -> (f32, f32) {
         let limit = settings.polyphony.clamp(1, MAX_VOICES);
         let sensitivity = settings.velocity_sensitivity.clamp(0.0, 1.0);
         let phase_randomization = self.phase_randomization;
-        let mut output = 0.0f32;
+        let uni = settings.unison;
+        let count = uni.voices.clamp(1, MAX_UNISON);
+        let mut layout = [(0.0f32, 1.0f32, 0.0f32); MAX_UNISON];
+        for (index, entry) in layout.iter_mut().enumerate().take(count) {
+            *entry = unison_voice_layout(index, count, &uni);
+        }
+        let (mut out_l, mut out_r) = (0.0f32, 0.0f32);
         for voice in &mut self.voices[..limit] {
             if !voice.active {
                 continue;
             }
             let bend = settings.pitch_bend[voice.channel as usize].clamp(-1.0, 1.0)
                 * settings.pitch_bend_range.clamp(0.0, 48.0);
-            let frequency = settings.a4_tuning.clamp(415.0, 466.0)
-                * 2.0f32.powf((voice.note as f32 - 69.0 + bend) / 12.0);
+            let base_semitones = voice.note as f32 - 69.0 + bend;
+            let frequency =
+                settings.a4_tuning.clamp(415.0, 466.0) * 2.0f32.powf(base_semitones / 12.0);
             let amplitude = voice.envelope.next(self.sample_rate, settings.envelope);
             let velocity_gain = 1.0 - sensitivity + sensitivity * voice.velocity;
             let pressure_gain = 0.5 + voice.pressure * 0.5;
-            let phase =
-                (voice.phase + (voice.phase_offset * phase_randomization) as f64).rem_euclid(1.0);
-            let oscillator = if settings.oscillator_enabled {
-                settings.wavetable.map_or_else(
-                    || (phase * std::f64::consts::TAU).sin() as f32,
-                    |wavetable| {
-                        wavetable.sample(
-                            phase,
-                            frequency,
-                            settings.wt_position,
-                            settings.interpolation,
-                        )
-                    },
-                )
-            } else {
-                0.0
-            };
-            let contribution = oscillator
-                * amplitude
+            let scale = amplitude
                 * velocity_gain
                 * pressure_gain
                 * settings.oscillator_level.clamp(0.0, 1.0);
+            let (mut left, mut right) = (0.0f32, 0.0f32);
+            if settings.oscillator_enabled {
+                let read = |phase: f64, frequency: f32| -> f32 {
+                    settings.wavetable.map_or_else(
+                        || (phase * std::f64::consts::TAU).sin() as f32,
+                        |wavetable| {
+                            wavetable.sample(
+                                phase,
+                                frequency,
+                                settings.wt_position,
+                                settings.interpolation,
+                            )
+                        },
+                    )
+                };
+                if count == 1 {
+                    let phase = (voice.phase + (voice.phase_offset * phase_randomization) as f64)
+                        .rem_euclid(1.0);
+                    left = read(phase, frequency);
+                    right = left;
+                } else {
+                    for (index, (detune, gain, pan)) in
+                        layout.iter().copied().enumerate().take(count)
+                    {
+                        let voice_frequency = frequency * 2.0f32.powf(detune / 12.0);
+                        let phase = (voice.uni_phase[index]
+                            + (voice.uni_start[index] * uni.random_phase.clamp(0.0, 1.0)) as f64)
+                            .rem_euclid(1.0);
+                        let sample = read(phase, voice_frequency) * gain;
+                        let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                        left += sample * angle.cos() * std::f32::consts::SQRT_2;
+                        right += sample * angle.sin() * std::f32::consts::SQRT_2;
+                        voice.uni_phase[index] = (voice.uni_phase[index]
+                            + voice_frequency as f64 / self.sample_rate as f64)
+                            .rem_euclid(1.0);
+                    }
+                }
+            }
+            let (left, right) = (left * scale, right * scale);
             voice.phase += frequency as f64 / self.sample_rate as f64;
             voice.phase -= voice.phase.floor();
-            if !contribution.is_finite() || !voice.phase.is_finite() {
+            if !left.is_finite() || !right.is_finite() || !voice.phase.is_finite() {
                 *voice = Voice::default();
             } else if voice.envelope.stage == Stage::Off {
                 voice.active = false;
             } else {
-                output += contribution;
+                out_l += left;
+                out_r += right;
             }
         }
-        output
+        (out_l, out_r)
     }
 
     pub fn active_voice_count(&self) -> usize {
@@ -524,5 +632,89 @@ mod tests {
             }
             assert!(manager.active_voice_count() <= MAX_VOICES);
         }
+    }
+}
+
+#[cfg(test)]
+mod unison_tests {
+    use super::*;
+    use crate::params::envelope::Env1Params;
+
+    fn render(unison: UnisonSettings, samples: usize) -> (Vec<f32>, Vec<f32>) {
+        let table = Wavetable::fallback_sine(48_000.0);
+        let envelope = Env1Params::default();
+        envelope.reset_smoothers();
+        let mut voices = VoiceManager::new(48_000.0);
+        voices.note_on(0, 57, 1.0, 1.0, 0.0, 8);
+        let bend = [0.0; 16];
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        for _ in 0..samples {
+            let settings = VoiceRenderSettings {
+                polyphony: 8,
+                a4_tuning: 440.0,
+                pitch_bend_range: 2.0,
+                pitch_bend: &bend,
+                envelope: envelope.next_values(),
+                velocity_sensitivity: 0.0,
+                wavetable: Some(&table),
+                wt_position: 0.0,
+                interpolation: FrameInterpolation::Frames,
+                oscillator_level: 1.0,
+                oscillator_enabled: true,
+                unison,
+            };
+            let (a, b) = voices.render_stereo(&settings);
+            l.push(a);
+            r.push(b);
+        }
+        (l, r)
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn layout_is_symmetric_and_outer_voices_detune_more() {
+        let s = UnisonSettings {
+            voices: 7,
+            detune: 1.0,
+            ..UnisonSettings::default()
+        };
+        let d: Vec<f32> = (0..7).map(|i| unison_voice_layout(i, 7, &s).0).collect();
+        assert!((d[0] + d[6]).abs() < 1.0e-5);
+        assert!(d[3].abs() < 1.0e-6);
+        assert!((d[1] - d[0]).abs() < d[0].abs());
+        assert!((d[0].abs() - 2.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn loudness_stays_similar_when_adding_voices() {
+        let one = rms(&render(UnisonSettings::default(), 24_000).0[8_000..]);
+        for n in [3, 8, 16] {
+            let uni = UnisonSettings {
+                voices: n,
+                ..UnisonSettings::default()
+            };
+            let (l, r) = render(uni, 24_000);
+            let both = (rms(&l[8_000..]).powi(2) + rms(&r[8_000..]).powi(2)).sqrt() / 2.0f32.sqrt();
+            let ratio_db = 20.0 * (both / one).log10();
+            assert!(ratio_db.abs() < 4.0, "{n} voices: {ratio_db} dB");
+        }
+    }
+
+    #[test]
+    fn width_widens_and_zero_width_is_mono() {
+        let wide = UnisonSettings {
+            voices: 8,
+            width: 1.0,
+            ..UnisonSettings::default()
+        };
+        let (l, r) = render(wide, 24_000);
+        assert!(l.iter().zip(&r).any(|(a, b)| (a - b).abs() > 0.01));
+        let mono = UnisonSettings { width: 0.0, ..wide };
+        let (l, r) = render(mono, 4_000);
+        assert!(l.iter().zip(&r).all(|(a, b)| (a - b).abs() < 1.0e-5));
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
     }
 }

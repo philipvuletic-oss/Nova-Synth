@@ -292,9 +292,16 @@ impl Plugin for Nova {
                 },
                 oscillator_level: self.params.osc_a.level.smoothed.next(),
                 oscillator_enabled: self.params.osc_a.enable.value(),
+                unison: crate::engine::UnisonSettings {
+                    voices: self.params.osc_a.uni_voices.value().clamp(1, 16) as usize,
+                    detune: self.params.osc_a.uni_detune.value(),
+                    range_semitones: self.params.osc_a.uni_range.value(),
+                    blend: self.params.osc_a.uni_blend.value(),
+                    width: self.params.osc_a.uni_width.value(),
+                    random_phase: self.params.osc_a.uni_rand_phase.value(),
+                },
             };
-            let mut left = self.voices.render_sample(&settings);
-            let mut right = left;
+            let (mut left, mut right) = self.voices.render_stereo(&settings);
             let pan = self.params.osc_a.pan.smoothed.next().clamp(-1.0, 1.0);
             let pan_angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
             left *= volume * pan_angle.cos() * std::f32::consts::SQRT_2;

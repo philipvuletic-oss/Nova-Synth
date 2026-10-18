@@ -9,4 +9,6 @@ pub mod signal;
 pub mod voice;
 pub mod voice_manager;
 
-pub use voice::{AudioTelemetry, KeyboardCommand, VoiceManager, VoiceRenderSettings};
+pub use voice::{
+    AudioTelemetry, KeyboardCommand, UnisonSettings, VoiceManager, VoiceRenderSettings,
+};
